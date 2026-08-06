@@ -1,0 +1,59 @@
+{
+  "results_dir": "results_datasize_dependence",
+  "prior_type": "uniform",
+  "smoke": false,
+  "n_obs_list": [
+    10,
+    75,
+    150,
+    225,
+    300
+  ],
+  "train_sizes": [
+    15000,
+    20000,
+    25000,
+    30000
+  ],
+  "n_try": 25,
+  "seed": 42,
+  "plot_style": "side_by_side",
+  "batch_size": 256,
+  "models_to_run": [
+    "smmd",
+    "npe"
+  ],
+  "models_config": {
+    "smmd": {
+      "epochs": 200,
+      "learning_rate": 0.001,
+      "summary_dim": 10,
+      "log_every_epochs": 10,
+      "smmd_M": 50,
+      "smmd_L": 20,
+      "smmd_l1_lambda": 0.0001
+    },
+    "npe": {
+      "epochs": 200,
+      "sbi_rounds": 1,
+      "sims_per_round": 1000,
+      "learning_rate": 0.0005,
+      "mcmc_chains": 100,
+      "training_batch_size": 200,
+      "validation_fraction": 0.1,
+      "stop_after_epochs": 200,
+      "show_train_summary": false
+    }
+  },
+  "n_samples_posterior": 1000,
+  "metric_max_samples": 1000,
+  "swd_n_projections": 1000,
+  "swd_max_samples": 1000,
+  "true_posterior_config": {
+    "method": "mcmc",
+    "n_draws": 1,
+    "n_tune_chain": 1000,
+    "chains": 1000,
+    "proposal_scale_coeff": 0.55
+  }
+}

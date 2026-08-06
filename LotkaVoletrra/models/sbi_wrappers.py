@@ -1,0 +1,243 @@
+import torch
+import numpy as np
+from sbi.inference import NPE_A, NPE_B, SNPE, NPE
+from sbi.utils import BoxUniform
+from models.theta_transforms import scale_theta_np, unscale_theta_np
+
+def calculate_summary_statistics(x):
+    """
+    Calculate summary statistics for Lotka-Volterra time series as described in
+    ExperimentDescription.md.
+    
+    Data x is (batch_size, 151, 2) corresponding to 30 time units with dt=0.2.
+    """
+    if not isinstance(x, torch.Tensor):
+        x = torch.tensor(x, dtype=torch.float32)
+        
+    # Handle single observation case (T, D) -> (1, T, D)
+    if x.ndim == 2:
+        x = x.unsqueeze(0)
+        
+    # Ensure x is 3D (batch, steps, dims)
+    if x.ndim != 3:
+        raise ValueError(f"Expected input shape (batch, steps, dims), got {x.shape}")
+
+    batch_size, n_steps, n_dims = x.shape
+    # n_dims should be 2 (Prey, Predator)
+    
+    # 1. Means (batch, 2)
+    means = x.mean(dim=1)
+    
+    # 2. Log Variance (batch, 2)
+    # Add small epsilon to avoid log(0)
+    variances = x.var(dim=1, unbiased=False) # Use biased or unbiased? usually unbiased.
+    log_vars = torch.log(variances + 1e-8)
+    
+    # Pre-calculate centered data for correlations
+    x_centered = x - means.unsqueeze(1)
+    
+    # Helper to calc autocorrelation at lag k
+    def calc_autocorr(k):
+        # Numerator: sum_{t=0}^{T-k-1} (x_t - mu)(x_{t+k} - mu)
+        # Denominator: sum_{t=0}^{T-1} (x_t - mu)^2  (which is var * T)
+        
+        # Slice views
+        x_t = x_centered[:, :-k, :]
+        x_tk = x_centered[:, k:, :]
+        
+        # Covariance at lag k
+        cov_k = (x_t * x_tk).sum(dim=1)
+        
+        # Variance * n_steps (denominator)
+        var_n = (x_centered ** 2).sum(dim=1)
+        
+        # Autocorrelation
+        # Avoid division by zero
+        rho_k = cov_k / (var_n + 1e-8)
+        return rho_k
+
+    # 3. Autocorrelation at lag 1 (dt=0.2) -> (batch, 2)
+    ac_lag1 = calc_autocorr(1)
+    
+    # 4. Autocorrelation at lag 2 (dt=0.4) -> (batch, 2)
+    ac_lag2 = calc_autocorr(2)
+    
+    # 5. Cross-correlation (batch, 1)
+    # Pearson correlation between series 0 and series 1
+    # cov(x0, x1) / (std(x0) * std(x1))
+    
+    x0_c = x_centered[:, :, 0]
+    x1_c = x_centered[:, :, 1]
+    
+    cov_01 = (x0_c * x1_c).sum(dim=1)
+    var_0 = (x0_c ** 2).sum(dim=1)
+    var_1 = (x1_c ** 2).sum(dim=1)
+    
+    cross_corr = cov_01 / (torch.sqrt(var_0 * var_1) + 1e-8)
+    cross_corr = cross_corr.unsqueeze(1) # (batch, 1)
+    
+    # Concatenate all features
+    # Order: Mean(2), LogVar(2), AC1(2), AC2(2), CrossCorr(1) -> Total 9
+    summary_stats = torch.cat([
+        means, 
+        log_vars, 
+        ac_lag1, 
+        ac_lag2, 
+        cross_corr
+    ], dim=1)
+    
+    return summary_stats
+
+def run_sbi_model(model_type, train_loader, x_obs, theta_true, task, device="cpu",
+                  num_rounds=1, sims_per_round=1000, max_epochs=1000, n_posterior_samples=1000, sample_with=None,
+                  theta_space="log", preprocess_obs_fn=None, return_posterior=False, **kwargs):
+    """
+    Run SBI training and inference using SNPE-A logic.
+    
+    model_type: 'snpe_a', 'snpe_b', or 'npe'
+    """
+    print(f"=== Running {model_type.upper()} (Rounds={num_rounds}, Sims/Round={sims_per_round}, MaxEpochs={max_epochs}) ===")
+    
+    # 0. Prepare Observation (x_obs)
+    if isinstance(x_obs, np.ndarray):
+        x_obs = torch.from_numpy(x_obs).float()
+    
+    # Handle dimensions for summary stats calculation
+    if x_obs.ndim == 2: # (steps, 2)
+        x_obs_input = x_obs.unsqueeze(0)
+    elif x_obs.ndim == 3: # (1, steps, 2)
+        x_obs_input = x_obs
+    else:
+        raise ValueError(f"Invalid x_obs shape: {x_obs.shape}")
+
+    x_obs_stats = calculate_summary_statistics(x_obs_input)
+    print(f"Observation Summary Stats: {x_obs_stats}")
+
+    use_scaled_theta = str(theta_space).lower() in ("scaled", "scale", "scaled_log", "scaled-log")
+    if use_scaled_theta:
+        low = torch.full((len(task.lower),), -1.0, dtype=torch.float32)
+        high = torch.full((len(task.upper),), 1.0, dtype=torch.float32)
+    else:
+        low = torch.tensor(task.lower, dtype=torch.float32)
+        high = torch.tensor(task.upper, dtype=torch.float32)
+    prior = BoxUniform(low=low, high=high)
+    
+    # 2. Instantiate Inference Object
+    # Force CPU to avoid MPS autograd issues if needed, but SBI usually handles it if configured.
+    # We will respect the device passed, but fallback to cpu for safety if needed.
+    device_sbi = "cpu" 
+    
+    # Normalize model_type
+    model_type_lower = model_type.lower()
+    
+    if model_type_lower == 'snpe_a':
+        inference = NPE_A(prior=prior, device=device_sbi)
+    elif model_type_lower == 'snpe_b':
+        inference = NPE_B(prior=prior, device=device_sbi)
+    elif model_type_lower in ['snpe_c', 'npe', 'snpe']:
+        # Use NPE (default SNPE-C / APT)
+        inference = NPE(prior=prior, device=device_sbi)
+    else:
+        # Fallback to NPE (default)
+        print(f"Warning: Unknown model_type '{model_type}'. Defaulting to NPE (SNPE-C).")
+        inference = NPE(prior=prior, device=device_sbi)
+
+    # 3. Sequential Inference Loop
+    proposal = prior
+    
+    initial_training_data = kwargs.pop("initial_training_data", None)
+    
+    train_validation_fraction = float(kwargs.pop("validation_fraction", 0.1))
+    if train_validation_fraction <= 0.0:
+        train_validation_fraction = 1.0 / float(max(2, int(sims_per_round)))
+    train_stop_after_epochs = int(kwargs.pop("stop_after_epochs", int(max_epochs) + 1))
+    train_kwargs_extra = {}
+    for k in [
+        "num_atoms",
+        "training_batch_size",
+        "learning_rate",
+        "clip_max_norm",
+        "calibration_kernel",
+        "resume_training",
+        "force_first_round_loss",
+        "discard_prior_samples",
+        "use_combined_loss",
+        "retrain_from_scratch",
+        "show_train_summary",
+        "dataloader_kwargs",
+    ]:
+        if k in kwargs:
+            train_kwargs_extra[k] = kwargs.pop(k)
+
+    for r in range(num_rounds):
+        print(f"--- SBI Round {r+1}/{num_rounds} ---")
+        
+        if r == 0 and initial_training_data is not None:
+            x_train_np, theta_train_np = initial_training_data
+            n0 = min(sims_per_round, theta_train_np.shape[0])
+            theta_np_log = theta_train_np[:n0].astype(np.float32)
+            theta_np = (
+                scale_theta_np(theta_np_log, task.lower, task.upper).astype(np.float32)
+                if use_scaled_theta
+                else theta_np_log
+            )
+            x_sim_np = x_train_np[:n0].astype(np.float32)
+            theta = torch.from_numpy(theta_np)
+            x_sim_torch = torch.from_numpy(x_sim_np)
+        else:
+            theta = proposal.sample((sims_per_round,))
+            theta_np = theta.cpu().numpy().astype(np.float32)
+            if use_scaled_theta:
+                theta_log_np = unscale_theta_np(theta_np, task.lower, task.upper, clip=True).astype(np.float32)
+            else:
+                theta_log_np = theta_np
+            x_sim_np = task.simulator(theta_log_np)
+            if preprocess_obs_fn is not None:
+                x_sim_np = preprocess_obs_fn(x_sim_np)
+            x_sim_torch = torch.from_numpy(x_sim_np).float()
+        
+        # Calculate summary stats
+        x = calculate_summary_statistics(x_sim_torch)
+        
+        # Ensure data is on correct device
+        theta = theta.to(device_sbi)
+        x = x.to(device_sbi)
+        
+        # B. Train
+        # Prepare kwargs for train
+        train_kwargs = {
+            "max_num_epochs": max_epochs,
+            "validation_fraction": train_validation_fraction,
+            "stop_after_epochs": train_stop_after_epochs,
+        }
+        train_kwargs.update(train_kwargs_extra)
+        
+        # NPE-A specific: trains a Gaussian density estimator in all but the last round.
+        if isinstance(inference, NPE_A):
+            final_round = (r == num_rounds - 1)
+            train_kwargs["final_round"] = final_round
+        
+        with torch.enable_grad():
+            # append_simulations returns the inference object, then we call train
+            # Note: proposal is passed to append_simulations to inform about the proposal used for simulation
+            inference = inference.append_simulations(theta, x, proposal=proposal)
+            density_estimator = inference.train(**train_kwargs)
+            
+        # C. Build Posterior & Update Proposal
+        if sample_with is None:
+            posterior = inference.build_posterior(density_estimator).set_default_x(x_obs_stats)
+        else:
+            posterior = inference.build_posterior(density_estimator, sample_with=sample_with).set_default_x(x_obs_stats)
+        proposal = posterior
+
+        
+    # 4. Final Sampling
+    print("Sampling from final posterior...")
+    
+    samples = posterior.sample((int(n_posterior_samples),))
+    samples_np = samples.detach().cpu().numpy()
+    if use_scaled_theta:
+        samples_np = unscale_theta_np(samples_np, task.lower, task.upper, clip=True)
+    if return_posterior:
+        return samples_np, posterior
+    return samples_np

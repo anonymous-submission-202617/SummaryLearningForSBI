@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.idea/
+.vscode/
+
+# Experiment outputs (regenerable by running the scripts)
+results/
+results_*/
+sbi-logs/
+checkpoints/
+logs/
+*.log
+
+# pyABC temporary databases
+*.db
+
+# Generated data / checkpoints (real observational data is kept, e.g. Radio/data/)
+Gaussian/data/_generated_*/
+Gaussian/data/_manual_reload_check_*/
+Gaussian/data/reload_verification/
+Gaussian/data/_smoke_reload_verification/
+Gaussian/data/artifacts/
+Gaussian/data/plots/
+Gaussian/data/*.pt
+Gaussian/data/*.json
+
+# Notebooks
+.ipynb_checkpoints/

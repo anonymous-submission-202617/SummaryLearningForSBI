@@ -1,0 +1,130 @@
+{
+  "prior_type": "uniform",
+  "n_observation": 50,
+  "n_observation_list": [
+    25,
+    50,
+    100
+  ],
+  "dataset_size": 12800,
+  "batch_size": 256,
+  "learning_rate": 0.001,
+  "seed": 0,
+  "n_samples_posterior": 1000,
+  "swd_n_projections": 1000,
+  "swd_max_samples": 1000,
+  "num_rounds": 10,
+  "true_posterior_config": {
+    "method": "mcmc",
+    "n_draws": 1,
+    "n_tune_chain": 1000,
+    "chains": 1000,
+    "proposal_scale_coeff": 0.55
+  },
+  "refine_config": {
+    "n_chains": 1000,
+    "burn_in": 99,
+    "thin": 1,
+    "nsims": 1,
+    "proposal_std": 0.5,
+    "epsilon": null
+  },
+  "models_to_run": [
+    "smmd",
+    "mmd",
+    "bayesflow",
+    "dnnabc",
+    "npe",
+    "td_npse"
+  ],
+  "models_config": {
+    "smmd": {
+      "epochs": 200,
+      "summary_dim": 10,
+      "learning_rate": 0.001
+    },
+    "mmd": {
+      "epochs": 200,
+      "summary_dim": 10,
+      "learning_rate": 0.001
+    },
+    "bayesflow": {
+      "epochs": 200,
+      "summary_dim": 10,
+      "learning_rate": 0.001,
+      "weight_decay": 0.0001
+    },
+    "dnnabc": {
+      "epochs": 200,
+      "n_pool": 200000,
+      "abc_batch_size": 10000
+    },
+    "npe": {
+      "epochs": 200,
+      "learning_rate": 0.0005,
+      "mcmc_chains": 100,
+      "training_batch_size": 200,
+      "validation_fraction": 0.1,
+      "stop_after_epochs": 200,
+      "sbi_rounds": 1,
+      "sims_per_round": 12800
+    },
+    "nle": {
+      "epochs": 200,
+      "learning_rate": 0.0001,
+      "hidden_features": 80,
+      "num_transforms": 5,
+      "num_blocks": 2,
+      "z_score_theta": "independent",
+      "z_score_x": "independent",
+      "validation_split": 0.05,
+      "stop_after_epochs": 30,
+      "training_batch_size": 4096,
+      "observations_per_theta": -1,
+      "device": "auto",
+      "mcmc_method": "slice_np_vectorized",
+      "mcmc_chains": 100,
+      "mcmc_chain_batch_size": null,
+      "mcmc_warmup_steps": 100,
+      "mcmc_thin": 1,
+      "slice_width_mode": "sqrt_n",
+      "slice_init_width": 0.01,
+      "slice_reference_n": 50.0,
+      "seed": 0
+    },
+    "td_npse": {
+      "eval_mode": "reload_checkpoint",
+      "checkpoint_path": "data/td_npse_checkpoint.pt",
+      "epochs": 500,
+      "training_batch_size": 256,
+      "learning_rate": 0.0001,
+      "lr_schedule": "cosine",
+      "eta_min": 0.0,
+      "hidden_dim": 256,
+      "num_layers": 3,
+      "hidden_features": [256, 256, 256],
+      "time_frequencies": 3,
+      "num_diffusion_steps": 100,
+      "sample_steps": 800,
+      "sampler_type": "ddim",
+      "cov_steps": 200,
+      "cov_samples": 2000,
+      "ddim_eta": 0.8,
+      "cov_reg": 0.001,
+      "cov_mode": "GAUSS",
+      "clip_denoised": true,
+      "uniform_prior_scale": 2.0,
+      "validation_split": 0.2,
+      "early_stopping": true,
+      "patience": 400,
+      "min_nb_epochs": 200,
+      "tall_score_mode": "gauss_clip",
+      "covariance_scale": 1.0,
+      "symmetry_mode_sampling_dims": [2, 3],
+      "covariance_symmetry_dims": [2, 3]
+    },
+    "w2abc": {
+      "max_populations": 2
+    }
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "num_rounds": 1,
+  "N": 1000000.0,
+  "T_MAX": 160.0,
+  "NUM_OBS": 80,
+  "dataset_size": 128,
+  "val_size": 16,
+  "batch_size": 32,
+  "learning_rate": 0.001,
+  "n_samples_posterior": 64,
+  "models_to_run": [
+    "smmd",
+    "mmd",
+    "bayesflow",
+    "dnnabc"
+  ],
+  "models_config": {
+    "smmd": {
+      "epochs": 1,
+      "summary_dim": 4
+    },
+    "mmd": {
+      "epochs": 1,
+      "summary_dim": 4
+    },
+    "bayesflow": {
+      "epochs": 1,
+      "summary_dim": 4
+    },
+    "dnnabc": {
+      "epochs": 1,
+      "n_pool": 512
+    }
+  },
+  "smmd_mmd_config": {
+    "M": 8,
+    "L": 4,
+    "bandwidth_n_samples": 128
+  },
+  "refinement_config": {
+    "n_chains": 16,
+    "burn_in": 2,
+    "n_samples_per_chain": 1,
+    "proposal_std": 0.3
+  },
+  "calibration_config": {
+    "num_calibration_pairs": 4,
+    "n_steps": 10,
+    "save_round_plots": false,
+    "max_plot_rounds": 1,
+    "round_size": 100
+  },
+  "seed": 0
+}

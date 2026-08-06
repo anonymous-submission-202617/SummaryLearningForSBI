@@ -1,0 +1,89 @@
+{
+  "n_rounds": 20,
+  "seed": 0,
+  "Ns": 801,
+  "N_rx": 100,
+  "B": 4000000000.0,
+  "tau0": 6e-09,
+  "prior_lower": [
+    1e-10,
+    1e-10,
+    1e7,
+    1e-11
+  ],
+  "prior_upper": [
+    1e-7,
+    1e-7,
+    5e9,
+    1e-8
+  ],
+  "dataset_size": 19200,  
+  "val_size": 100,
+  "batch_size": 128,
+  "learning_rate": 0.001,
+  "n_samples_posterior": 1000,
+  "models_to_run": [
+    "smmd",
+    "bayesflow",
+    "dnnabc",
+    "npe_rs"
+  ],
+  "models_config": {
+    "smmd": {
+      "epochs": 120,
+      "summary_dim": 8
+    },
+    "mmd": {
+      "epochs": 120,
+      "summary_dim": 8
+    },
+    "bayesflow": {
+      "epochs": 120,
+      "summary_dim": 8
+    },
+    "dnnabc": {
+      "epochs": 120,
+      "n_pool": 50000
+    },
+    "npe_rs": {
+      "distance": "mmd",
+      "beta": 1,
+      "num_simulations": 19200,
+      "training_batch_size": 128,
+      "learning_rate": 0.001,
+      "validation_fraction": 0.1,
+      "stop_after_epochs": 120,
+      "max_num_epochs": 120,
+      "hidden_features": 100,
+      "num_transforms": 5,
+      "summary_hidden_dim": 4,
+      "summary_out_dim": 4,
+      "use_prior_new": true,
+      "prior_new_low": [
+       1e-10,
+       1e-10,
+       1e7,
+       1e-11
+      ],
+      "prior_new_high": [
+         1e-7,
+         1e-7,
+         5e9,
+         1e-8
+      ]
+    }
+  },
+  "smmd_mmd_config": {
+    "M": 50,
+    "L": 20,
+    "bandwidth_n_samples": 5000
+  },
+  "refinement_config": {
+    "n_chains": 1000,
+    "burn_in": 49,
+    "n_samples_per_chain": 1,
+    "thin": 1,
+    "proposal_std": 1.0,
+    "epsilon_quantile": 0.005
+  }
+}
