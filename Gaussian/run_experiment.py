@@ -318,6 +318,8 @@ mc.setdefault("slice_width_mode", "constant")
 mc.setdefault("slice_init_width", 0.01)
 mc.setdefault("slice_reference_n", 50.0)
 mc.setdefault("seed", 0)
+mc.setdefault("eval_mode", "reload_checkpoint")
+mc.setdefault("checkpoint_path", os.path.join("data", "nle_checkpoint.pt"))
 
 mc = MODELS_CONFIG.setdefault("td_npse", {})
 mc.setdefault("eval_mode", "reload_checkpoint")
@@ -382,8 +384,12 @@ def resolve_model_config(model_type):
     return None
 
 
-def _resolve_td_npse_checkpoint_path(td_cfg):
-    requested = str(td_cfg.get("checkpoint_path", "") or "").strip()
+def _resolve_checkpoint_path(cfg):
+    """Resolve a model checkpoint path configured in ``cfg`` to an existing file.
+
+    Returns ``None`` when no path is configured or the file is not found.
+    """
+    requested = str(cfg.get("checkpoint_path", "") or "").strip()
     if not requested:
         return None
     candidates = []
@@ -409,6 +415,16 @@ def _load_td_npse_checkpoint_for_eval(checkpoint_path, device):
     model.load_state_dict(checkpoint["model_state_dict"])
     model = model.to(device)
     model.eval()
+    train_time_sec = float(checkpoint.get("train_time_sec", 0.0))
+    epochs_ran = int(checkpoint.get("epochs_ran", 0))
+    return model, checkpoint, train_time_sec, epochs_ran
+
+
+def _load_nle_checkpoint_for_eval(checkpoint_path, device):
+    """Load an NLE checkpoint trained by ``run_nle_singleobs_train.py``."""
+    model, checkpoint = NLESBIOfficialFactorized.load_checkpoint(
+        checkpoint_path, device=str(device)
+    )
     train_time_sec = float(checkpoint.get("train_time_sec", 0.0))
     epochs_ran = int(checkpoint.get("epochs_ran", 0))
     return model, checkpoint, train_time_sec, epochs_ran
@@ -1254,6 +1270,7 @@ def run_single_experiment(
     refinement_time = 0.0
     total_time = 0.0  # For DNNABC/W2ABC
     td_npse_used_pretrained = False
+    nle_used_pretrained = False
 
     t_start_total = time.time()
 
@@ -1300,54 +1317,87 @@ def run_single_experiment(
         loss_history = train_dnnabc(model, train_loader, epochs, device)
     elif model_type == "nle":
         nle_cfg = MODELS_CONFIG.get(model_type, {})
-        lr = nle_cfg.get("learning_rate", 1e-4)
-        if initial_training_data is None:
-            raise ValueError(
-                "NLE requires initial_training_data=(x_train, theta_train)."
+        nle_eval_mode = str(nle_cfg.get("eval_mode", "reload_checkpoint")).lower()
+        if nle_eval_mode == "reload_checkpoint":
+            checkpoint_path = _resolve_checkpoint_path(nle_cfg)
+            if checkpoint_path is None:
+                raise FileNotFoundError(
+                    "NLE eval_mode='reload_checkpoint' but checkpoint_path was not found. "
+                    f"Configured path: {nle_cfg.get('checkpoint_path')!r}"
+                )
+            print(f"Reloading NLE checkpoint for evaluation: {checkpoint_path}")
+            model, checkpoint, training_time, checkpoint_epochs = _load_nle_checkpoint_for_eval(
+                checkpoint_path,
+                device,
             )
-        x_train_np, theta_train_np = initial_training_data
-        nle_device = nle_cfg.get("device", str(device))
-        print(f"NLE training/inference device request: {nle_device}")
-        model = NLESBIOfficialFactorized(
-            theta_dim=d,
-            x_dim=d_x,
-            prior_lower=task.lower,
-            prior_upper=task.upper,
-            prior_type=task.prior_type,
-            hidden_features=nle_cfg.get("hidden_features", 50),
-            num_transforms=nle_cfg.get("num_transforms", 5),
-            num_blocks=nle_cfg.get("num_blocks", 2),
-            z_score_theta=nle_cfg.get("z_score_theta", "independent"),
-            z_score_x=nle_cfg.get("z_score_x", "independent"),
-            observations_per_theta=nle_cfg.get("observations_per_theta", 10),
-            mcmc_method=nle_cfg.get("mcmc_method", "slice_np_vectorized"),
-            mcmc_chains=nle_cfg.get("mcmc_chains", 64),
-            mcmc_chain_batch_size=nle_cfg.get("mcmc_chain_batch_size", None),
-            mcmc_warmup_steps=nle_cfg.get("mcmc_warmup_steps", 200),
-            mcmc_thin=nle_cfg.get("mcmc_thin", 1),
-            slice_width_mode=nle_cfg.get("slice_width_mode", "constant"),
-            slice_init_width=nle_cfg.get("slice_init_width", 0.01),
-            slice_reference_n=nle_cfg.get("slice_reference_n", 50.0),
-            seed=nle_cfg.get("seed", 0),
-            device=nle_device,
-        )
-        t_train_start = time.time()
-        train_summary = model.fit(
-            theta_train=theta_train_np,
-            x_train=x_train_np,
-            max_num_epochs=epochs,
-            learning_rate=lr,
-            training_batch_size=nle_cfg.get("training_batch_size", BATCH_SIZE),
-            validation_fraction=nle_cfg.get("validation_split", 0.05),
-            stop_after_epochs=nle_cfg.get("stop_after_epochs", 20),
-        )
-        training_time = time.time() - t_train_start
-        loss_history = train_summary.sbi_summary
+            nle_used_pretrained = True
+            loss_history = []
+            ckpt_prior_type = str(
+                checkpoint.get("model_kwargs", {}).get("prior_type", "unknown")
+            )
+            if ckpt_prior_type != str(task.prior_type):
+                print(
+                    f"Warning: NLE checkpoint prior_type='{ckpt_prior_type}' differs from "
+                    f"current task prior_type='{task.prior_type}'."
+                )
+            print(
+                f"Loaded NLE checkpoint trained for {checkpoint_epochs} epochs "
+                f"(recorded training_time={training_time:.2f}s)."
+            )
+        elif nle_eval_mode == "train_from_scratch":
+            lr = nle_cfg.get("learning_rate", 1e-4)
+            if initial_training_data is None:
+                raise ValueError(
+                    "NLE requires initial_training_data=(x_train, theta_train)."
+                )
+            x_train_np, theta_train_np = initial_training_data
+            nle_device = nle_cfg.get("device", str(device))
+            print(f"NLE training/inference device request: {nle_device}")
+            model = NLESBIOfficialFactorized(
+                theta_dim=d,
+                x_dim=d_x,
+                prior_lower=task.lower,
+                prior_upper=task.upper,
+                prior_type=task.prior_type,
+                hidden_features=nle_cfg.get("hidden_features", 50),
+                num_transforms=nle_cfg.get("num_transforms", 5),
+                num_blocks=nle_cfg.get("num_blocks", 2),
+                z_score_theta=nle_cfg.get("z_score_theta", "independent"),
+                z_score_x=nle_cfg.get("z_score_x", "independent"),
+                observations_per_theta=nle_cfg.get("observations_per_theta", 10),
+                mcmc_method=nle_cfg.get("mcmc_method", "slice_np_vectorized"),
+                mcmc_chains=nle_cfg.get("mcmc_chains", 64),
+                mcmc_chain_batch_size=nle_cfg.get("mcmc_chain_batch_size", None),
+                mcmc_warmup_steps=nle_cfg.get("mcmc_warmup_steps", 200),
+                mcmc_thin=nle_cfg.get("mcmc_thin", 1),
+                slice_width_mode=nle_cfg.get("slice_width_mode", "constant"),
+                slice_init_width=nle_cfg.get("slice_init_width", 0.01),
+                slice_reference_n=nle_cfg.get("slice_reference_n", 50.0),
+                seed=nle_cfg.get("seed", 0),
+                device=nle_device,
+            )
+            t_train_start = time.time()
+            train_summary = model.fit(
+                theta_train=theta_train_np,
+                x_train=x_train_np,
+                max_num_epochs=epochs,
+                learning_rate=lr,
+                training_batch_size=nle_cfg.get("training_batch_size", BATCH_SIZE),
+                validation_fraction=nle_cfg.get("validation_split", 0.05),
+                stop_after_epochs=nle_cfg.get("stop_after_epochs", 20),
+            )
+            training_time = time.time() - t_train_start
+            loss_history = train_summary.sbi_summary
+        else:
+            raise ValueError(
+                f"Unknown NLE eval_mode='{nle_eval_mode}'. "
+                "Expected 'reload_checkpoint' or 'train_from_scratch'."
+            )
     elif model_type == "td_npse":
         td_cfg = MODELS_CONFIG.get(model_type, {})
         td_eval_mode = str(td_cfg.get("eval_mode", "reload_checkpoint")).lower()
         if td_eval_mode == "reload_checkpoint":
-            checkpoint_path = _resolve_td_npse_checkpoint_path(td_cfg)
+            checkpoint_path = _resolve_checkpoint_path(td_cfg)
             if checkpoint_path is None:
                 raise FileNotFoundError(
                     "TD-NPSE eval_mode='reload_checkpoint' but checkpoint_path was not found. "
@@ -1567,7 +1617,11 @@ def run_single_experiment(
         print(f"--- Skipping Local Refinement for {model_type} (as requested) ---")
         refined_samples_flat = posterior_samples
         eval_wall_time = time.time() - t_start_total
-        total_time = training_time + eval_wall_time if td_npse_used_pretrained else eval_wall_time
+        total_time = (
+            training_time + eval_wall_time
+            if (td_npse_used_pretrained or nle_used_pretrained)
+            else eval_wall_time
+        )
     else:
         print(f"--- Local Refinement ({model_type}) ---")
 

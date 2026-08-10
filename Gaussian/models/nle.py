@@ -241,6 +241,85 @@ class NLESBIOfficialFactorized(nn.Module):
             )
         return log_prob if theta.ndim == 2 else log_prob[0]
 
+    def get_model_kwargs(self) -> Dict[str, Any]:
+        """Constructor arguments needed to rebuild this model from a checkpoint."""
+        return {
+            "theta_dim": self.theta_dim,
+            "x_dim": self.x_dim,
+            "prior_lower": np.asarray(self._cpu_prior.low.cpu().numpy(), dtype=np.float32),
+            "prior_upper": np.asarray(self._cpu_prior.high.cpu().numpy(), dtype=np.float32),
+            "hidden_features": self.hidden_features,
+            "num_transforms": self.num_transforms,
+            "num_blocks": self.num_blocks,
+            "z_score_theta": self.z_score_theta,
+            "z_score_x": self.z_score_x,
+            "observations_per_theta": self.observations_per_theta,
+            "mcmc_method": self.mcmc_method,
+            "mcmc_chains": self.mcmc_chains,
+            "mcmc_chain_batch_size": self.mcmc_chain_batch_size,
+            "mcmc_warmup_steps": self.mcmc_warmup_steps,
+            "mcmc_thin": self.mcmc_thin,
+            "slice_width_mode": self.slice_width_mode,
+            "slice_init_width": self.slice_init_width,
+            "slice_reference_n": self.slice_reference_n,
+            "seed": self.seed,
+            "device": self.device,
+            "prior_type": self.prior_type,
+        }
+
+    def save_checkpoint(
+        self,
+        checkpoint_path: str,
+        train_time_sec: float = 0.0,
+        epochs_ran: int = 0,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Persist the trained likelihood estimator and model configuration."""
+        if self.likelihood_estimator is None:
+            raise RuntimeError("Cannot save an untrained NLE model; call fit() first.")
+        payload: Dict[str, Any] = {
+            "model_kwargs": self.get_model_kwargs(),
+            "estimator_state_dict": self.likelihood_estimator.state_dict(),
+            "train_time_sec": float(train_time_sec),
+            "epochs_ran": int(epochs_ran),
+        }
+        if extra:
+            payload["extra"] = extra
+        torch.save(payload, checkpoint_path)
+
+    @classmethod
+    def load_checkpoint(
+        cls, checkpoint_path: str, device: str = "auto"
+    ) -> Tuple["NLESBIOfficialFactorized", Dict[str, Any]]:
+        """Rebuild a trained NLE model from a checkpoint saved by ``save_checkpoint``."""
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        model_kwargs = dict(checkpoint["model_kwargs"])
+        if device not in (None, ""):
+            model_kwargs["device"] = str(device)
+        model = cls(**model_kwargs)
+
+        estimator_builder = likelihood_nn(
+            model="maf",
+            z_score_theta=model.z_score_theta,
+            z_score_x=model.z_score_x,
+            hidden_features=model.hidden_features,
+            num_transforms=model.num_transforms,
+            embedding_net=nn.Identity(),
+            num_blocks=model.num_blocks,
+            use_batch_norm=False,
+        )
+        # The builder returns a function that constructs the estimator from a
+        # reference batch (used for shape inference and z-scoring); its
+        # parameters are replaced by the trained state dict below.
+        gen = torch.Generator().manual_seed(0)
+        ref_theta = torch.randn((8, model.theta_dim), generator=gen)
+        ref_x = torch.randn((8, model.x_dim), generator=gen)
+        estimator = estimator_builder(ref_theta, ref_x)
+        estimator.load_state_dict(checkpoint["estimator_state_dict"])
+        model.likelihood_estimator = estimator.to(model.sbi_device)
+        model.eval()
+        return model, checkpoint
+
     def fit(
         self,
         theta_train: np.ndarray,

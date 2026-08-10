@@ -35,6 +35,7 @@
     "bayesflow",
     "dnnabc",
     "npe",
+    "nle",
     "td_npse"
   ],
   "models_config": {
@@ -70,7 +71,7 @@
       "sims_per_round": 12800
     },
     "nle": {
-      "epochs": 200,
+      "epochs": 500,
       "learning_rate": 0.0001,
       "hidden_features": 80,
       "num_transforms": 5,
@@ -79,7 +80,7 @@
       "z_score_x": "independent",
       "validation_split": 0.05,
       "stop_after_epochs": 30,
-      "training_batch_size": 4096,
+      "training_batch_size": 256,
       "observations_per_theta": -1,
       "device": "auto",
       "mcmc_method": "slice_np_vectorized",
@@ -90,7 +91,9 @@
       "slice_width_mode": "sqrt_n",
       "slice_init_width": 0.01,
       "slice_reference_n": 50.0,
-      "seed": 0
+      "seed": 0,
+      "eval_mode": "reload_checkpoint",
+      "checkpoint_path": "data/nle_checkpoint.pt"
     },
     "td_npse": {
       "eval_mode": "reload_checkpoint",
@@ -102,7 +105,11 @@
       "eta_min": 0.0,
       "hidden_dim": 256,
       "num_layers": 3,
-      "hidden_features": [256, 256, 256],
+      "hidden_features": [
+        256,
+        256,
+        256
+      ],
       "time_frequencies": 3,
       "num_diffusion_steps": 100,
       "sample_steps": 800,
@@ -120,8 +127,14 @@
       "min_nb_epochs": 200,
       "tall_score_mode": "gauss_clip",
       "covariance_scale": 1.0,
-      "symmetry_mode_sampling_dims": [2, 3],
-      "covariance_symmetry_dims": [2, 3]
+      "symmetry_mode_sampling_dims": [
+        2,
+        3
+      ],
+      "covariance_symmetry_dims": [
+        2,
+        3
+      ]
     },
     "w2abc": {
       "max_populations": 2

@@ -39,14 +39,21 @@ Each task directory contains a main experiment and, in some cases, auxiliary
 sub-experiments:
 
 - **`Gaussian/` — toy example with multimodal posterior.** SMMD, MMD,
-  BayesFlow, DNN-ABC, SNPE-C, NLE and TD-NPSE at observation counts
-  `n = 25, 50, 100`, with local refinement.
-  - `Gaussian/DataSizeDependence/` — scaling study: SMMD vs NPE across
-    training budgets and observation counts.
-  - `Gaussian/run_refinement_trajectory.py` — auxiliary: visualizes the
-    refinement trajectory.
+  BayesFlow, DNN-ABC and SNPE-C at observation counts `n = 25, 50, 100`,
+  with local refinement. NLE and TD-NPSE are trained once on a large
+  single-observation dataset (50,000 pairs, uniform prior) by standalone
+  scripts; the main experiment loads their checkpoints and only performs
+  posterior inference and metric evaluation (no per-round training or
+  local refinement).
+  - `Gaussian/run_nle_singleobs_train.py` — auxiliary: trains the NLE
+    model and exports `data/nle_checkpoint.pt`.
   - `Gaussian/run_td_npse_singleobs_train_pairplots.py` — auxiliary:
     TD-NPSE training and pairplot diagnostics.
+  - `Gaussian/DataSizeDependence/` — scaling study: SMMD vs NPE across
+    training budgets (`N = 15,000 / 20,000 / 30,000`) and observation
+    counts (`n = 10 / 75 / 150 / 225 / 300`).
+  - `Gaussian/run_refinement_trajectory.py` — auxiliary: visualizes the
+    refinement trajectory.
 - **`SIR/` — epidemic calibration experiment.** SMMD, MMD, BayesFlow and
   DNN-ABC under a simulation-based calibration protocol, with local
   refinement.
@@ -122,6 +129,19 @@ Sub-experiments are run in the same way:
 python Gaussian/DataSizeDependence/run_experiment.py --config Gaussian/DataSizeDependence/config.json
 python LotkaVoletrra/run_refine_plus_validation.py   # loads config_rss.json
 ```
+
+Before running the Gaussian main experiment, train the NLE and TD-NPSE
+checkpoints (only required once per dataset):
+
+```bash
+python Gaussian/run_nle_singleobs_train.py --n-train 50000 --epochs 200
+python Gaussian/run_td_npse_singleobs_train_pairplots.py --n-train 50000
+```
+
+The Gaussian main experiment then loads `Gaussian/data/nle_checkpoint.pt` and
+`Gaussian/data/td_npse_checkpoint.pt` automatically (config entries
+`models_config.nle` / `models_config.td_npse` with `eval_mode:
+"reload_checkpoint"`).
 
 The scripts insert the task directory and the repository root into
 `sys.path`, so they work from any working directory. Results are written to
