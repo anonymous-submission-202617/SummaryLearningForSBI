@@ -24,7 +24,7 @@ from data_generation import load_task
 from models.smmd import SMMD_Model, sliced_mmd_loss
 from models.dnnabc import DNNABC_Model, train_dnnabc, abc_rejection_sampling
 from models.sbi_wrappers import run_npe_rs
-from utilities import refine_posterior_smmd, refine_posterior_bayesflow, turin_temporal_moments_from_pdb, mmd_unweighted_rbf
+from utilities import refine_posterior_smmd, refine_posterior_bayesflow
 
 
 def _log(msg: str) -> None:
@@ -331,17 +331,6 @@ def predictive_rmse_mean_curve(predictive_data_db: np.ndarray, obs_mean_db: np.n
     return float(np.sqrt(np.mean((pred_mean - obs_mean) ** 2)))
 
 
-def predictive_rmse_avg_over_post(predictive_data_db: np.ndarray, obs_mean_db: np.ndarray) -> float:
-    pred = np.asarray(predictive_data_db, dtype=np.float32)
-    obs_mean = np.asarray(obs_mean_db, dtype=np.float32).reshape(1, -1)
-    if pred.ndim != 2:
-        raise ValueError(f"Expected predictive_data_db with shape (n_post, n_time), got {pred.shape}")
-    if pred.shape[1] != obs_mean.shape[1]:
-        raise ValueError(f"RMSE shape mismatch: pred {pred.shape} vs obs_mean {obs_mean.shape}")
-    rmse_per_post = np.sqrt(np.mean((pred - obs_mean) ** 2, axis=1))
-    return float(np.mean(rmse_per_post))
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default=None)
@@ -361,7 +350,6 @@ def main():
     task, x_obs_mat = load_task(str(project_root), config_path=str(cfg_path))
     x_obs_mat = np.asarray(x_obs_mat, dtype=np.float32)[: int(task.N_rx), : int(task.Ns)]
     x_obs_mean = np.mean(x_obs_mat, axis=0).astype(np.float32)
-    obs_turin_stats = turin_temporal_moments_from_pdb(x_obs_mat, K=4, B=float(task.B))
     n_time_steps = int(task.Ns)
     n_realizations = int(task.N_rx)
     _log(
@@ -374,7 +362,7 @@ def main():
     # directory requested via RADIO_RESULTS_DIR (used e.g. for smoke tests).
     results_root = Path(os.environ.get("RADIO_RESULTS_DIR", str(project_root / "results")))
     results_root.mkdir(parents=True, exist_ok=True)
-    all_round_rows: list[dict] = []
+    rmse_rows_all: list[dict] = []
     for r in range(int(n_rounds)):
         round_seed = base_seed + r
         np.random.seed(round_seed)
@@ -428,26 +416,19 @@ def main():
         num_slices = int(smmd_mmd_cfg.get("L", 20))
         compare_series = []
         compare_series_refined = {}
-        turin_mmd_rows: list[dict] = []
+        rmse_rows: list[dict] = []
 
-        def record_eval_metrics(label: str, predictive_data_db: np.ndarray) -> tuple[float, float, float]:
-            pred_stats = turin_temporal_moments_from_pdb(predictive_data_db, K=4, B=float(task.B))
-            mmd_val = mmd_unweighted_rbf(pred_stats, obs_turin_stats, lengthscale=1.0, device=torch.device("cpu"))
+        def record_eval_metrics(label: str, predictive_data_db: np.ndarray) -> float:
             rmse_mean_curve_val = predictive_rmse_mean_curve(predictive_data_db, x_obs_mean)
-            rmse_avg_over_post_val = predictive_rmse_avg_over_post(predictive_data_db, x_obs_mean)
-            turin_mmd_rows.append(
+            rmse_rows.append(
                 {
                     "round": int(r + 1),
                     "model": str(label),
-                    "turin_mmd": float(mmd_val),
                     "rmse_mean_curve": float(rmse_mean_curve_val),
-                    "rmse_avg_over_post": float(rmse_avg_over_post_val),
                     "n_pred": int(np.asarray(predictive_data_db).shape[0]),
-                    "n_obs": int(obs_turin_stats.shape[0]),
-                    "lengthscale": 1.0,
                 }
             )
-            return float(mmd_val), float(rmse_mean_curve_val), float(rmse_avg_over_post_val)
+            return float(rmse_mean_curve_val)
 
         color_map = {
             "smmd": "C0",
@@ -488,12 +469,8 @@ def main():
 
                 theta_post = filter_valid(task, sample_theta_smmd(model, x_obs_mat, n_samples_posterior, task=task))
                 sims = task.simulator(theta_post[:n_samples_posterior], n_rx=1).mean(axis=1)
-                mmd_smmd, rmse_smmd_mean_curve, rmse_smmd_avg_over_post = record_eval_metrics("SMMD", sims)
-                _log(
-                    f"Evaluation | SMMD | Turin MMD = {mmd_smmd:.6f} | "
-                    f"RMSE(mean_curve) = {rmse_smmd_mean_curve:.6f} | "
-                    f"RMSE(avg_over_post) = {rmse_smmd_avg_over_post:.6f}"
-                )
+                rmse_smmd_mean_curve = record_eval_metrics("SMMD", sims)
+                _log(f"Evaluation | SMMD | RMSE(mean_curve) = {rmse_smmd_mean_curve:.6f}")
                 compare_series.append(
                     {
                         "label": "SMMD",
@@ -522,14 +499,8 @@ def main():
                 sims_ref = None
                 if refined.shape[0] > 0:
                     sims_ref = task.simulator(refined[:n_samples_posterior], n_rx=1).mean(axis=1)
-                    mmd_smmd_ref, rmse_smmd_ref_mean_curve, rmse_smmd_ref_avg_over_post = record_eval_metrics(
-                        "SMMD(Refined)", sims_ref
-                    )
-                    _log(
-                        f"Evaluation | SMMD(Refined) | Turin MMD = {mmd_smmd_ref:.6f} | "
-                        f"RMSE(mean_curve) = {rmse_smmd_ref_mean_curve:.6f} | "
-                        f"RMSE(avg_over_post) = {rmse_smmd_ref_avg_over_post:.6f}"
-                    )
+                    rmse_smmd_ref_mean_curve = record_eval_metrics("SMMD(Refined)", sims_ref)
+                    _log(f"Evaluation | SMMD(Refined) | RMSE(mean_curve) = {rmse_smmd_ref_mean_curve:.6f}")
                     compare_series_refined["SMMD"] = {
                         "label": "SMMD(Refined)",
                         "mean": np.mean(sims_ref, axis=0),
@@ -591,12 +562,8 @@ def main():
 
                 theta_post = filter_valid(task, sample_theta_bayesflow(model, x_obs_mat, n_samples_posterior, task=task))
                 sims = task.simulator(theta_post[:n_samples_posterior], n_rx=1).mean(axis=1)
-                mmd_bf, rmse_bf_mean_curve, rmse_bf_avg_over_post = record_eval_metrics("BayesFlow", sims)
-                _log(
-                    f"Evaluation | BayesFlow | Turin MMD = {mmd_bf:.6f} | "
-                    f"RMSE(mean_curve) = {rmse_bf_mean_curve:.6f} | "
-                    f"RMSE(avg_over_post) = {rmse_bf_avg_over_post:.6f}"
-                )
+                rmse_bf_mean_curve = record_eval_metrics("BayesFlow", sims)
+                _log(f"Evaluation | BayesFlow | RMSE(mean_curve) = {rmse_bf_mean_curve:.6f}")
                 compare_series.append(
                     {
                         "label": "BayesFlow",
@@ -625,14 +592,8 @@ def main():
                 sims_ref = None
                 if refined.shape[0] > 0:
                     sims_ref = task.simulator(refined[:n_samples_posterior], n_rx=1).mean(axis=1)
-                    mmd_bf_ref, rmse_bf_ref_mean_curve, rmse_bf_ref_avg_over_post = record_eval_metrics(
-                        "BayesFlow(Refined)", sims_ref
-                    )
-                    _log(
-                        f"Evaluation | BayesFlow(Refined) | Turin MMD = {mmd_bf_ref:.6f} | "
-                        f"RMSE(mean_curve) = {rmse_bf_ref_mean_curve:.6f} | "
-                        f"RMSE(avg_over_post) = {rmse_bf_ref_avg_over_post:.6f}"
-                    )
+                    rmse_bf_ref_mean_curve = record_eval_metrics("BayesFlow(Refined)", sims_ref)
+                    _log(f"Evaluation | BayesFlow(Refined) | RMSE(mean_curve) = {rmse_bf_ref_mean_curve:.6f}")
                     compare_series_refined["BayesFlow"] = {
                         "label": "BayesFlow(Refined)",
                         "mean": np.mean(sims_ref, axis=0),
@@ -669,12 +630,8 @@ def main():
                 )
                 theta_post = filter_valid(task, theta_post)
                 sims = task.simulator(theta_post[:n_samples_posterior], n_rx=1).mean(axis=1)
-                mmd_abc, rmse_abc_mean_curve, rmse_abc_avg_over_post = record_eval_metrics("DNN-ABC", sims)
-                _log(
-                    f"Evaluation | DNN-ABC | Turin MMD = {mmd_abc:.6f} | "
-                    f"RMSE(mean_curve) = {rmse_abc_mean_curve:.6f} | "
-                    f"RMSE(avg_over_post) = {rmse_abc_avg_over_post:.6f}"
-                )
+                rmse_abc_mean_curve = record_eval_metrics("DNN-ABC", sims)
+                _log(f"Evaluation | DNN-ABC | RMSE(mean_curve) = {rmse_abc_mean_curve:.6f}")
                 plot_predictive_mean_std(
                     [
                         {
@@ -708,12 +665,8 @@ def main():
                 )
                 theta_post = filter_valid(task, theta_post)
                 sims = task.simulator(theta_post[:n_samples_posterior], n_rx=1).mean(axis=1)
-                mmd_npe, rmse_npe_mean_curve, rmse_npe_avg_over_post = record_eval_metrics("NPE-RS", sims)
-                _log(
-                    f"Evaluation | NPE-RS | Turin MMD = {mmd_npe:.6f} | "
-                    f"RMSE(mean_curve) = {rmse_npe_mean_curve:.6f} | "
-                    f"RMSE(avg_over_post) = {rmse_npe_avg_over_post:.6f}"
-                )
+                rmse_npe_mean_curve = record_eval_metrics("NPE-RS", sims)
+                _log(f"Evaluation | NPE-RS | RMSE(mean_curve) = {rmse_npe_mean_curve:.6f}")
                 plot_predictive_mean_std(
                     [
                         {
@@ -755,54 +708,23 @@ def main():
                     refined_plot, x_obs_mean, result_base / "compare_predictive_mean_std_refined.png"
                 )
 
-        if turin_mmd_rows:
-            all_round_rows.extend(turin_mmd_rows)
-            out_json = result_base / "turin_mmd_table.json"
-            with open(out_json, "w", encoding="utf-8") as f:
-                json.dump(turin_mmd_rows, f, indent=2)
-            _log(f"Saved Turin MMD table (json): {out_json}")
+        if rmse_rows:
+            rmse_rows_all.extend(rmse_rows)
 
-            out_csv = result_base / "turin_mmd_table.csv"
-            with open(out_csv, "w", encoding="utf-8", newline="") as f:
-                fieldnames = [
-                    "round",
-                    "model",
-                    "turin_mmd",
-                    "rmse_mean_curve",
-                    "rmse_avg_over_post",
-                    "n_pred",
-                    "n_obs",
-                    "lengthscale",
-                ]
-                w = csv.DictWriter(f, fieldnames=fieldnames)
-                w.writeheader()
-                for row in turin_mmd_rows:
-                    w.writerow({k: row.get(k) for k in fieldnames})
-            _log(f"Saved Turin MMD table (csv): {out_csv}")
-
-    if all_round_rows:
-        out_all_rounds = results_root / "turin_mmd_all_rounds.csv"
+    if rmse_rows_all:
+        out_all_rounds = results_root / "rmse_all_rounds.csv"
         with open(out_all_rounds, "w", encoding="utf-8", newline="") as f:
-            fieldnames = [
-                "round",
-                "model",
-                "turin_mmd",
-                "rmse_mean_curve",
-                "rmse_avg_over_post",
-                "n_pred",
-                "n_obs",
-                "lengthscale",
-            ]
+            fieldnames = ["round", "model", "rmse_mean_curve", "n_pred"]
             w = csv.DictWriter(f, fieldnames=fieldnames)
             w.writeheader()
-            for row in all_round_rows:
+            for row in rmse_rows_all:
                 w.writerow({k: row.get(k) for k in fieldnames})
-        _log(f"Saved all-round Turin MMD table: {out_all_rounds}")
+        _log(f"Saved all-round RMSE table: {out_all_rounds}")
 
         summary_rows = []
-        for model_name in sorted({str(row["model"]) for row in all_round_rows}):
+        for model_name in sorted({str(row["model"]) for row in rmse_rows_all}):
             vals = np.asarray(
-                [float(row["turin_mmd"]) for row in all_round_rows if str(row["model"]) == model_name],
+                [float(row["rmse_mean_curve"]) for row in rmse_rows_all if str(row["model"]) == model_name],
                 dtype=np.float64,
             )
             if vals.size == 0:
@@ -811,76 +733,26 @@ def main():
                 {
                     "model": model_name,
                     "n_rounds": int(vals.size),
-                    "mmd_mean": float(np.mean(vals)),
-                    "mmd_median": float(np.median(vals)),
-                    "mmd_std": float(np.std(vals, ddof=0)),
-                    "rmse_mean_curve_mean": float(
-                        np.mean(
-                            [float(row["rmse_mean_curve"]) for row in all_round_rows if str(row["model"]) == model_name]
-                        )
-                    ),
-                    "rmse_mean_curve_median": float(
-                        np.median(
-                            [float(row["rmse_mean_curve"]) for row in all_round_rows if str(row["model"]) == model_name]
-                        )
-                    ),
-                    "rmse_mean_curve_std": float(
-                        np.std(
-                            [float(row["rmse_mean_curve"]) for row in all_round_rows if str(row["model"]) == model_name],
-                            ddof=0,
-                        )
-                    ),
-                    "rmse_avg_over_post_mean": float(
-                        np.mean(
-                            [
-                                float(row["rmse_avg_over_post"])
-                                for row in all_round_rows
-                                if str(row["model"]) == model_name
-                            ]
-                        )
-                    ),
-                    "rmse_avg_over_post_median": float(
-                        np.median(
-                            [
-                                float(row["rmse_avg_over_post"])
-                                for row in all_round_rows
-                                if str(row["model"]) == model_name
-                            ]
-                        )
-                    ),
-                    "rmse_avg_over_post_std": float(
-                        np.std(
-                            [
-                                float(row["rmse_avg_over_post"])
-                                for row in all_round_rows
-                                if str(row["model"]) == model_name
-                            ],
-                            ddof=0,
-                        )
-                    ),
+                    "rmse_mean_curve_mean": float(np.mean(vals)),
+                    "rmse_mean_curve_median": float(np.median(vals)),
+                    "rmse_mean_curve_std": float(np.std(vals, ddof=0)),
                 }
             )
 
-        out_summary = results_root / "turin_mmd_summary_stats.csv"
+        out_summary = results_root / "rmse_summary_stats.csv"
         with open(out_summary, "w", encoding="utf-8", newline="") as f:
             fieldnames = [
                 "model",
                 "n_rounds",
-                "mmd_mean",
-                "mmd_median",
-                "mmd_std",
                 "rmse_mean_curve_mean",
                 "rmse_mean_curve_median",
                 "rmse_mean_curve_std",
-                "rmse_avg_over_post_mean",
-                "rmse_avg_over_post_median",
-                "rmse_avg_over_post_std",
             ]
             w = csv.DictWriter(f, fieldnames=fieldnames)
             w.writeheader()
             for row in summary_rows:
                 w.writerow({k: row.get(k) for k in fieldnames})
-        _log(f"Saved Turin MMD summary stats: {out_summary}")
+        _log(f"Saved RMSE summary stats: {out_summary}")
 
     _log("All done.")
 

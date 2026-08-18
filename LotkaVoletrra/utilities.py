@@ -293,17 +293,20 @@ def approximate_likelihood_core(
     epsilon,
     device,
     preprocess_obs_fn=None,
-    n_likelihood_replicates=5,
+    n_sims=1,
 ):
     """
-    Core approximate log-likelihood computation.
-    Returns log(1/K * sum_i kernel(||S(x_i)-S(x*)|| / epsilon)) in float64.
+    Approximate likelihood of Algorithm 1, evaluated in log space:
+        log ell(theta) = log( (1/n_sims) * sum_{j=1}^{n_sims}
+            exp( -||S(X_j) - S(X*)||^2 / (2 epsilon^2) ) ),
+    where X_j ~ P_theta^(n) are n_sims i.i.d. simulated datasets at theta.
+    Computed in float64 for numerical stability.
     """
     theta = np.asarray(theta)
     if theta.ndim != 2:
         raise ValueError(f"Expected theta with shape (batch, d), got {theta.shape}")
 
-    n_reps = max(int(n_likelihood_replicates), 1)
+    n_reps = max(int(n_sims), 1)
 
     # 1. Simulate (Numpy) - forced by task.simulator
     # theta: (batch, d)
@@ -391,7 +394,7 @@ def refine_posterior_smmd(model, x_obs, task,
                          n_chains=1000, n_samples=1, burn_in=99, 
                          thin=1, epsilon=None, proposal_std=0.5, device=None, theta_init=None,
                          bandwidth_n_samples=5000, bandwidth_quantile_level=0.01,
-                         preprocess_obs_fn=None, n_likelihood_replicates=5, bandwidth_plot_path=None):
+                         preprocess_obs_fn=None, n_sims=1, bandwidth_plot_path=None):
     if device is None:
         try:
             device = next(model.parameters()).device
@@ -455,7 +458,7 @@ def refine_posterior_smmd(model, x_obs, task,
             epsilon,
             device,
             preprocess_obs_fn=preprocess_obs_fn,
-            n_likelihood_replicates=n_likelihood_replicates,
+            n_sims=n_sims,
         )
 
     def log_prior_fn(theta):
@@ -483,7 +486,7 @@ def refine_posterior_bayesflow(model, x_obs, task,
                              n_chains=1000, n_samples=1, burn_in=99, 
                              thin=1, epsilon=None, proposal_std=0.5, device=None, theta_init=None,
                              bandwidth_n_samples=5000, bandwidth_quantile_level=0.01,
-                             preprocess_obs_fn=None, n_likelihood_replicates=5, bandwidth_plot_path=None):
+                             preprocess_obs_fn=None, n_sims=1, bandwidth_plot_path=None):
     if device is None:
         # Infer device from model (Keras model usually manages its own device, but we need it for tensors)
         device = "cpu"
@@ -573,7 +576,7 @@ def refine_posterior_bayesflow(model, x_obs, task,
             epsilon,
             device,
             preprocess_obs_fn=preprocess_obs_fn,
-            n_likelihood_replicates=n_likelihood_replicates,
+            n_sims=n_sims,
         )
 
     def log_prior_fn(theta):

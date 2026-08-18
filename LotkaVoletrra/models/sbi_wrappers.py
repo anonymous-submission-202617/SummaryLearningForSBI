@@ -1,6 +1,13 @@
 import torch
 import numpy as np
-from sbi.inference import NPE_A, NPE_B, SNPE, NPE
+try:
+    # sbi >= 0.22 (incl. the pinned 0.26.1): SNPE* naming.
+    from sbi.inference import SNPE_A, SNPE_B, SNPE as _SNPE_CLASS
+
+    NPE, NPE_A, NPE_B = _SNPE_CLASS, SNPE_A, SNPE_B
+except ImportError:
+    # sbi <= 0.19: legacy NPE* naming.
+    from sbi.inference import NPE, NPE_A, NPE_B
 from sbi.utils import BoxUniform
 from models.theta_transforms import scale_theta_np, unscale_theta_np
 

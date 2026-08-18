@@ -12,7 +12,7 @@ estimator state dict, so the inference settings (slice-sampler chains, warmup,
 thin, ...) are fixed at training time and reproduced exactly on reload.
 
 Example:
-    python run_nle_singleobs_train.py --n-train 50000 --epochs 200
+    python run_nle_singleobs_train.py --n-train 50000 --epochs 500
 """
 
 import argparse
@@ -105,7 +105,7 @@ def build_parser(nle_cfg: Dict[str, Any]) -> argparse.ArgumentParser:
                         help="Number of (theta, single-observation) training pairs.")
     parser.add_argument("--train-n-obs", type=int, default=1,
                         help="Number of observations simulated per theta draw.")
-    parser.add_argument("--epochs", type=int, default=cfg_get("epochs", 200))
+    parser.add_argument("--epochs", type=int, default=cfg_get("epochs", 500))
     parser.add_argument("--training-batch-size", type=int,
                         default=cfg_get("training_batch_size", 256))
     parser.add_argument("--learning-rate", type=float,
@@ -113,9 +113,9 @@ def build_parser(nle_cfg: Dict[str, Any]) -> argparse.ArgumentParser:
     parser.add_argument("--validation-split", type=float,
                         default=cfg_get("validation_split", 0.05))
     parser.add_argument("--stop-after-epochs", type=int,
-                        default=cfg_get("stop_after_epochs", 20))
+                        default=cfg_get("stop_after_epochs", 30))
     parser.add_argument("--hidden-features", type=int,
-                        default=cfg_get("hidden_features", 50))
+                        default=cfg_get("hidden_features", 80))
     parser.add_argument("--num-transforms", type=int,
                         default=cfg_get("num_transforms", 5))
     parser.add_argument("--num-blocks", type=int,
@@ -125,14 +125,14 @@ def build_parser(nle_cfg: Dict[str, Any]) -> argparse.ArgumentParser:
     parser.add_argument("--observations-per-theta", type=int,
                         default=cfg_get("observations_per_theta", -1))
     parser.add_argument("--mcmc-method", default=cfg_get("mcmc_method", "slice_np_vectorized"))
-    parser.add_argument("--mcmc-chains", type=int, default=cfg_get("mcmc_chains", 64))
+    parser.add_argument("--mcmc-chains", type=int, default=cfg_get("mcmc_chains", 100))
     parser.add_argument("--mcmc-chain-batch-size", type=int,
                         default=int(cfg_get("mcmc_chain_batch_size", 0) or 0),
                         help="0 disables batching (all chains at once).")
     parser.add_argument("--mcmc-warmup-steps", type=int,
-                        default=cfg_get("mcmc_warmup_steps", 200))
+                        default=cfg_get("mcmc_warmup_steps", 100))
     parser.add_argument("--mcmc-thin", type=int, default=cfg_get("mcmc_thin", 1))
-    parser.add_argument("--slice-width-mode", default=cfg_get("slice_width_mode", "constant"))
+    parser.add_argument("--slice-width-mode", default=cfg_get("slice_width_mode", "sqrt_n"))
     parser.add_argument("--slice-init-width", type=float,
                         default=cfg_get("slice_init_width", 0.01))
     parser.add_argument("--slice-reference-n", type=float,
@@ -209,7 +209,7 @@ def main() -> None:
     device = auto_select_device(args.device)
 
     train_n_obs = int(args.train_n_obs)
-    task = GaussianTask(n=train_n_obs, prior_type="uniform")
+    task = GaussianTask(n=train_n_obs)
 
     checkpoint_path = Path(args.checkpoint_path)
     if not checkpoint_path.is_absolute():

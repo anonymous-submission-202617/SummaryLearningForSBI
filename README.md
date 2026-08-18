@@ -50,17 +50,13 @@ sub-experiments:
   - `Gaussian/run_td_npse_singleobs_train_pairplots.py` — auxiliary:
     TD-NPSE training and pairplot diagnostics.
   - `Gaussian/DataSizeDependence/` — scaling study: SMMD vs NPE across
-    training budgets (`N = 15,000 / 20,000 / 30,000`) and observation
+    training budgets (`N = 20,000 / 30,000 / 40,000`) and observation
     counts (`n = 10 / 75 / 150 / 225 / 300`).
-  - `Gaussian/run_refinement_trajectory.py` — auxiliary: visualizes the
-    refinement trajectory.
 - **`SIR/` — epidemic calibration experiment.** SMMD, MMD, BayesFlow and
   DNN-ABC under a simulation-based calibration protocol, with local
   refinement.
 - **`LotkaVoletrra/` — population-ecology model with vague prior.** SMMD, MMD,
   BayesFlow, DNN-ABC and SNPE-C with the Refine+ refinement variant.
-  - `LotkaVoletrra/run_refine_plus_validation.py` — auxiliary: Refine+
-    validation run (loads `config_rss.json`).
 - **`Radio/` — real data with a misspecified simulator.** SMMD, MMD,
   BayesFlow, DNN-ABC and NPE-RS.
 
@@ -104,8 +100,7 @@ pip install -r environment/requirements.txt
 ```
 
 On NVIDIA GPUs, install the matching CUDA build of PyTorch before the other
-packages; `environment/setup_env.sh` provides a full GPU environment setup
-script (Linux, CUDA 12.8).
+packages (the experiments were run on Linux with CUDA 12.8).
 
 ## Running an experiment
 
@@ -127,21 +122,46 @@ Sub-experiments are run in the same way:
 
 ```bash
 python Gaussian/DataSizeDependence/run_experiment.py --config Gaussian/DataSizeDependence/config.json
-python LotkaVoletrra/run_refine_plus_validation.py   # loads config_rss.json
 ```
 
 Before running the Gaussian main experiment, train the NLE and TD-NPSE
 checkpoints (only required once per dataset):
 
 ```bash
-python Gaussian/run_nle_singleobs_train.py --n-train 50000 --epochs 200
+python Gaussian/run_nle_singleobs_train.py --n-train 50000 --epochs 500
 python Gaussian/run_td_npse_singleobs_train_pairplots.py --n-train 50000
 ```
 
-The Gaussian main experiment then loads `Gaussian/data/nle_checkpoint.pt` and
-`Gaussian/data/td_npse_checkpoint.pt` automatically (config entries
+The Gaussian main experiment then reloads these checkpoints (config entries
 `models_config.nle` / `models_config.td_npse` with `eval_mode:
-"reload_checkpoint"`).
+"reload_checkpoint"`) and only performs posterior inference and metric
+evaluation. Note the following:
+
+- `run_nle_singleobs_train.py` saves its checkpoint directly to
+  `Gaussian/data/nle_checkpoint.pt` (the default `--checkpoint-path`).
+- `run_td_npse_singleobs_train_pairplots.py` writes its checkpoint under
+  `Gaussian/results/td_npse_singleobs_train_pairplots/<exp_name>/artifacts/td_npse_checkpoint.pt`,
+  where `<exp_name>` encodes `n_train`, `train_n_obs`, `epochs` and `seed`
+  (e.g. `ntrain50000_trainobs1_e5000_seed0`). Copy it to the location
+  expected by the main experiment before running it:
+
+  ```bash
+  cp Gaussian/results/td_npse_singleobs_train_pairplots/ntrain50000_trainobs1_e5000_seed0/artifacts/td_npse_checkpoint.pt \
+     Gaussian/data/td_npse_checkpoint.pt
+  ```
+
+- In reload mode, `run_experiment.py` rebuilds both models from the saved
+  checkpoint (`model_kwargs` plus state dict), so their training and
+  inference hyperparameters (e.g. NLE epochs, TD-NPSE diffusion/sampling
+  settings) come from the training run, not from `config.json`; the
+  training-related `nle`/`td_npse` config fields are therefore ignored by
+  the main experiment. Set training hyperparameters through the standalone
+  scripts' CLI arguments (defaults: NLE 500 epochs; TD-NPSE up to 5000
+  epochs with early stopping).
+- To confirm the checkpoints were loaded, look for
+  `Reloading NLE checkpoint for evaluation: ...` and
+  `Reloading TD-NPSE checkpoint for evaluation: ...` in the main experiment
+  log. A missing checkpoint raises `FileNotFoundError`.
 
 The scripts insert the task directory and the repository root into
 `sys.path`, so they work from any working directory. Results are written to

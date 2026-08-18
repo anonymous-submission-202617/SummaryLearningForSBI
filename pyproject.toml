@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sbi-benchmark"
 version = "0.1.0"
-description = "Simulation-based inference benchmarks: SMMD, MMD, BayesFlow, DNNABC, W2-ABC, NPE"
+description = "Simulation-based inference benchmarks: SMMD, MMD, BayesFlow, DNNABC, NPE"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

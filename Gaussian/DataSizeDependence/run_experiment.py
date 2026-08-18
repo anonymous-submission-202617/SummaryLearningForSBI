@@ -2,7 +2,7 @@
 
 Scans training set size (``train_sizes``) and observations per dataset
 (``n_obs_list``) and trains SMMD vs NPE for each combination, writing
-aggregated SWD/MMD metric tables and the transposed SWD figure to
+aggregated SWD metric tables and the transposed SWD figure to
 ``results_dir``.
 """
 
@@ -29,10 +29,10 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from sbi_common.config_utils import cli_config_arg, resolve_config_path  # noqa: E402
-from data_generation import GaussianTask, d, d_x, generate_dataset  # noqa: E402
+from data_generation import TRUE_PARAMS, GaussianTask, d, d_x, generate_dataset  # noqa: E402
 from models.sbi_wrappers import run_sbi_model, train_sbi_model, sample_from_trained_sbi  # noqa: E402
 from models.smmd import SMMD_Model, sliced_mmd_loss  # noqa: E402
-from utilities import compute_mmd_metric, compute_swd_metric, run_gaussian_posterior_mcmc  # noqa: E402
+from utilities import compute_swd_metric, run_gaussian_posterior_mcmc, run_folded_nuts_true_posterior  # noqa: E402
 
 
 def _device() -> torch.device:
@@ -219,8 +219,6 @@ def main():
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    prior_type = str(cfg.get("prior_type", "conditional")).lower()
-
     smoke = bool(cfg.get("smoke", False)) or os.environ.get("DATASIZE_SMOKE", "").strip() == "1"
     n_obs_list: List[int] = [int(v) for v in cfg.get("n_obs_list", [25, 50, 100])]
     train_sizes: List[int] = [int(v) for v in cfg.get("train_sizes", [1000, 2000, 3000])]
@@ -251,6 +249,9 @@ def main():
         true_post_cfg["n_draws"] = min(int(true_post_cfg.get("n_draws", 4)), 1)
         true_post_cfg["n_tune_chain"] = min(int(true_post_cfg.get("n_tune_chain", 800)), 50)
         true_post_cfg["chains"] = min(int(true_post_cfg.get("chains", 200)), 16)
+        true_post_cfg["draws"] = min(int(true_post_cfg.get("draws", 250)), 20)
+        true_post_cfg["tune"] = min(int(true_post_cfg.get("tune", 200)), 10)
+        true_post_cfg["chains"] = min(int(true_post_cfg.get("chains", 4)), 2)
         for model_name in models_to_run:
             mc = dict(model_cfg_map.get(model_name, {}))
             mc["epochs"] = min(int(mc.get("epochs", 2)), 2)
@@ -281,11 +282,12 @@ def main():
         "swd_n_projections": swd_n_projections,
         "swd_max_samples": swd_max_samples,
         "true_posterior_config": true_post_cfg,
-        "evaluation_metrics": ["mmd_median_heuristic", "swd_scaled_by_sqrt_n"],
+        "evaluation_metrics": ["swd_scaled_by_sqrt_n"],
         "evaluation_protocol": {
             "retrain_for_each_try": False,
             "regenerate_training_dataset_for_each_try": False,
-            "sample_new_test_theta_for_each_try": True,
+            "sample_new_test_theta_for_each_try": False,
+            "fixed_test_theta": [float(v) for v in TRUE_PARAMS],
             "sample_new_observation_for_each_try": True,
             "sample_true_posterior_for_each_try": True,
         },
@@ -297,7 +299,7 @@ def main():
     agg_csv_path = os.path.join(out_dir, "results_agg.csv")
 
     for n_obs in n_obs_list:
-        task = GaussianTask(n=int(n_obs), prior_type=prior_type)
+        task = GaussianTask(n=int(n_obs))
 
         for n_train in train_sizes:
             batch_size = int(batch_size_map[int(n_train)])
@@ -315,7 +317,6 @@ def main():
 
             per_model = {
                 model_name: {
-                    "mmd_vals": [],
                     "swd_vals": [],
                     "train_time": None,
                     "true_times": [],
@@ -400,30 +401,50 @@ def main():
                     flush=True,
                 )
 
-                # Sample a new test theta* and generate its observation
-                theta_true = task.sample_prior(1)[0]
+                # Fixed test theta* (same TRUE_PARAMS as the main Gaussian
+                # experiment); only the observation is resampled per try.
+                theta_true = TRUE_PARAMS
                 x_obs_3d = task.simulator(theta_true[None, :], n_samples=int(n_obs))[0]
                 x_obs_2d = _stereo_inverse(x_obs_3d)
 
-                # Compute true posterior via MCMC for this observation
-                coeff = float(true_post_cfg.get("proposal_scale_coeff", 0.6))
-                proposal_scale = float(coeff / np.sqrt(float(task.n)))
-                print(
-                    f"Sampling true posterior: chains={int(true_post_cfg.get('chains', 200))} "
-                    f"tune={int(true_post_cfg.get('n_tune_chain', 800))} "
-                    f"draws={int(true_post_cfg.get('n_draws', 4))} "
-                    f"proposal_scale={proposal_scale:.6f}",
-                    flush=True,
-                )
+                # Compute true posterior for this observation
+                method = str(true_post_cfg.get("method", "mcmc")).lower()
+                proposal_scale = float("nan")  # only used by the RWM fallback
                 t_true0 = time.time()
-                true_samples = run_gaussian_posterior_mcmc(
-                    x_obs_2d,
-                    task,
-                    n_draws=int(true_post_cfg.get("n_draws", 4)),
-                    n_tune_chain=int(true_post_cfg.get("n_tune_chain", 800)),
-                    chains=int(true_post_cfg.get("chains", 200)),
-                    proposal_scale=float(proposal_scale),
-                )
+                if method == "folded_nuts":
+                    true_samples = run_folded_nuts_true_posterior(
+                        x_obs_2d,
+                        draws=int(true_post_cfg.get("draws", 250)),
+                        tune=int(true_post_cfg.get("tune", 200)),
+                        chains=int(true_post_cfg.get("chains", 4)),
+                        target_accept=float(true_post_cfg.get("target_accept", 0.9)),
+                        random_seed=int(true_post_cfg.get(
+                            "random_seed", int(seed) + int(n_obs) * 100000 + int(n_train) * 100 + int(try_idx) * 10)),
+                        n_per_quad=int(true_post_cfg.get("n_per_quad", 250)),
+                    )
+                    print(
+                        f"Folded NUTS true posterior: {true_samples.shape} "
+                        f"({int(true_samples.shape[0]) // 4} per quadrant)",
+                        flush=True,
+                    )
+                else:
+                    coeff = float(true_post_cfg.get("proposal_scale_coeff", 0.6))
+                    proposal_scale = float(coeff / np.sqrt(float(task.n)))
+                    print(
+                        f"Sampling true posterior (RWM): chains={int(true_post_cfg.get('chains', 200))} "
+                        f"tune={int(true_post_cfg.get('n_tune_chain', 800))} "
+                        f"draws={int(true_post_cfg.get('n_draws', 4))} "
+                        f"proposal_scale={proposal_scale:.6f}",
+                        flush=True,
+                    )
+                    true_samples = run_gaussian_posterior_mcmc(
+                        x_obs_2d,
+                        task,
+                        n_draws=int(true_post_cfg.get("n_draws", 4)),
+                        n_tune_chain=int(true_post_cfg.get("n_tune_chain", 800)),
+                        chains=int(true_post_cfg.get("chains", 200)),
+                        proposal_scale=float(proposal_scale),
+                    )
                 true_time_sec = float(time.time() - t_true0)
                 for model_name in models_to_run:
                     model_conf = dict(model_cfg_map.get(model_name, {}))
@@ -448,7 +469,7 @@ def main():
                     stats["true_times"].append(float(true_time_sec))
 
                     print(
-                        f"Eval {model_label}: approximate posterior vs true posterior with MMD + sW ...",
+                        f"Eval {model_label}: approximate posterior vs true posterior with sW ...",
                         flush=True,
                     )
                     metric_seed = (
@@ -474,7 +495,6 @@ def main():
                         true_sub = true_samples_np
 
                     t_metric0 = time.time()
-                    mmd_val = float(compute_mmd_metric(approx_sub, true_sub))
                     scale = float(np.sqrt(float(task.n)))
                     swd_val = float(
                         compute_swd_metric(
@@ -489,7 +509,6 @@ def main():
 
                     stats["metric_times"].append(float(metric_time_sec))
                     stats["eval_times"].append(float(metric_time_sec + true_time_sec))
-                    stats["mmd_vals"].append(float(mmd_val))
                     stats["swd_vals"].append(float(swd_val))
 
                     raw_rows.append(
@@ -506,8 +525,8 @@ def main():
                             "theta_true_3": float(theta_true[3]),
                             "theta_true_4": float(theta_true[4]),
                             "proposal_scale": float(proposal_scale),
+                            "true_posterior_method": str(method),
                             "n_metric_samples": int(n_common),
-                            "mmd": float(mmd_val),
                             "swd": float(swd_val),
                             "swd_scale": float(scale),
                             "train_time_sec": float(per_model[model_name]["train_time"]),
@@ -519,7 +538,7 @@ def main():
                     )
                     pd.DataFrame(raw_rows).to_csv(raw_csv_path, index=False)
                     print(
-                        f"Eval done ({model_label}): MMD={mmd_val:.6f} sW(scaled)={swd_val:.6f} "
+                        f"Eval done ({model_label}): sW(scaled)={swd_val:.6f} "
                         f"true_post_time={true_time_sec:.2f}s metric_time={metric_time_sec:.2f}s",
                         flush=True,
                     )
@@ -534,8 +553,6 @@ def main():
                         "n_train": int(n_train),
                         "batch_size": int(batch_size),
                         "n_try": int(n_try),
-                        "mmd_mean": float(np.mean(stats["mmd_vals"])) if stats["mmd_vals"] else float("nan"),
-                        "mmd_std": float(np.std(stats["mmd_vals"], ddof=0)) if stats["mmd_vals"] else float("nan"),
                         "swd_mean": float(np.mean(stats["swd_vals"])) if stats["swd_vals"] else float("nan"),
                         "swd_std": float(np.std(stats["swd_vals"], ddof=0)) if stats["swd_vals"] else float("nan"),
                         "train_time_mean_sec": float(stats["train_time"]) if stats["train_time"] is not None else float("nan"),
@@ -547,7 +564,6 @@ def main():
                 )
                 print(
                     f"Cell summary ({_model_display_name(model_name)}): "
-                    f"MMD_mean={np.mean(stats['mmd_vals']):.6f} MMD_std={np.std(stats['mmd_vals'], ddof=0):.6f} "
                     f"| sW_mean={np.mean(stats['swd_vals']):.6f} sW_std={np.std(stats['swd_vals'], ddof=0):.6f}",
                     flush=True,
                 )
@@ -570,7 +586,7 @@ def main():
     # Colors matching the main Gaussian experiment
     color_map = {"smmd": "#DB1218", "npe": "#f19327", "snpe_c": "#f19327", "snpe": "#f19327"}
 
-    ylabel_map = {"mmd": "MMD", "swd": r"$\mathrm{sW}$"}
+    ylabel_map = {"swd": r"$\mathrm{sW}$"}
 
     def _plot_metric_transposed(metric: str, out_name: str):
         """Transposed multi-panel: 1 row × len(train_sizes) columns, n on x-axis (linear)."""

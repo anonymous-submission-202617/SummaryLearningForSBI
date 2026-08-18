@@ -283,9 +283,11 @@ def compute_bandwidth_core(
 def approximate_likelihood_core(theta, x_obs_stats, task, stats_fn, epsilon, device):
     """ABC kernel log-likelihood: ``-||T(x) - T(x_obs)||^2 / (2 eps^2)``.
 
-    Returned directly in log space (computed in float64) so that distant
-    proposals cannot underflow to zero; the MCMC refinement consumes these
-    log values directly.
+    This is the single-dataset version of the approximate likelihood of
+    Algorithm 1 (n_sims = 1 for the SIR task): one dataset X ~ P_theta^(n) is
+    simulated per likelihood evaluation. Returned directly in log space
+    (computed in float64) so that distant proposals cannot underflow to zero;
+    the MCMC refinement consumes these log values directly.
     """
     sim_data = task.simulator(theta, n_samples=task.n_obs)
     sim_data_tensor = torch.from_numpy(sim_data).float().to(device)

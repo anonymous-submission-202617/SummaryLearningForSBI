@@ -1,6 +1,13 @@
 import torch
 import numpy as np
-from sbi.inference import NPE_A, NPE_B, SNPE, NPE
+try:
+    # sbi >= 0.22 (incl. the pinned 0.26.1): SNPE* naming.
+    from sbi.inference import SNPE_A, SNPE_B, SNPE as _SNPE_CLASS
+
+    NPE, NPE_A, NPE_B = _SNPE_CLASS, SNPE_A, SNPE_B
+except ImportError:
+    # sbi <= 0.19: legacy NPE* naming.
+    from sbi.inference import NPE, NPE_A, NPE_B
 from sbi.utils import BoxUniform
 
 
@@ -139,6 +146,7 @@ def train_sbi_model(
     sims_per_round=1000,
     max_epochs=1000,
     initial_training_data=None,
+    x_obs=None,
     validation_fraction=0.1,
     stop_after_epochs=20,
     learning_rate=5e-4,
@@ -149,6 +157,13 @@ def train_sbi_model(
 
     This separates training from sampling so the same model can be evaluated
     on multiple different x_obs without retraining.
+
+    For ``num_rounds > 1`` (sequential SNPE-C), each round's proposal is the
+    posterior conditioned on a specific observation, so ``x_obs`` (the
+    observation used for inference) must be passed; rounds 2+ sample the
+    proposal via ``posterior.sample(...)`` and require ``set_default_x``.
+    For amortized training evaluated on many observations (e.g.,
+    DataSizeDependence), keep ``num_rounds == 1``.
 
     Returns
     -------
@@ -174,6 +189,30 @@ def train_sbi_model(
     low = torch.tensor(task.lower, dtype=torch.float32, device=device_sbi)
     high = torch.tensor(task.upper, dtype=torch.float32, device=device_sbi)
     prior = BoxUniform(low=low, high=high, device=str(device_sbi))
+
+    if x_obs is not None:
+        if isinstance(x_obs, np.ndarray):
+            x_obs = torch.from_numpy(x_obs).float()
+        if x_obs.ndim == 2:
+            x_obs_input = x_obs.unsqueeze(0)
+        elif x_obs.ndim == 3:
+            x_obs_input = x_obs
+        else:
+            raise ValueError(
+                f"Expected x_obs shape (n, d) or (1, n, d), got {x_obs.shape}"
+            )
+        x_obs_stats = calculate_summary_statistics(x_obs_input)
+    else:
+        x_obs_stats = None
+
+    if num_rounds > 1 and x_obs_stats is None:
+        raise ValueError(
+            "Multi-round SNPE-C (num_rounds>1) requires conditioning on the "
+            "observation used for inference: pass x_obs so that each round's "
+            "proposal is p(theta | x_obs). For amortized evaluation over many "
+            "observations without retraining (e.g., DataSizeDependence), keep "
+            "num_rounds=1."
+        )
 
     model_type_lower = model_type.lower()
     if model_type_lower == "snpe_a":
@@ -231,6 +270,8 @@ def train_sbi_model(
         posterior = inference.build_posterior(
             density_estimator, sample_with="mcmc"
         )
+        if x_obs_stats is not None:
+            posterior = posterior.set_default_x(x_obs_stats)
         proposal = posterior
 
     print("SBI training complete.")

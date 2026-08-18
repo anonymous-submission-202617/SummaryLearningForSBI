@@ -261,7 +261,6 @@ MODEL_COLORS = {
     "MMD": "#1083CA",
     "BAYESFLOW": "#49C926",
     "DNNABC": "#8315dd",
-    "W2ABC": "#0f12ae",
 }
 STAGE_LABELS = {"initial": "Amortized", "refine": "Refined"}
 STAGE_LINESTYLES = {"initial": "--", "refine": "-"}

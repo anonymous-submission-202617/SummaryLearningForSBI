@@ -39,7 +39,6 @@ from models.mmd import MMD_Model, mmd_loss
 from models.bayesflow_net import build_bayesflow_model
 from models.dnnabc import DNNABC_Model, train_dnnabc, abc_rejection_sampling
 from models.nle import NLESBIOfficialFactorized
-from models.w2abc import run_w2abc
 from models.sbi_wrappers import run_sbi_model
 from models.td_npse import TDNPSE_Model, FullSingleObservationDataset, train_td_npse
 from utilities import (
@@ -48,6 +47,7 @@ from utilities import (
     compute_mmd_metric,
     compute_swd_metric,
     run_gaussian_posterior_mcmc,
+    run_folded_nuts_true_posterior,
 )
 
 
@@ -225,7 +225,6 @@ else:
         print("Warning: config.json not found. Using default parameters.")
     CONFIG = {}
 
-PRIOR_TYPE = str(CONFIG.get("prior_type", "conditional")).lower()
 SAVE_MODEL_PARAMS = bool(CONFIG.get("save_model_params", False))
 
 # Generic experiment-level settings
@@ -269,7 +268,6 @@ RAW_MODELS_CONFIG = CONFIG.get(
         "bayesflow": 200,
         "dnnabc": 200,
         "npe": 1000,
-        "w2abc": 0,
     },
 )
 
@@ -344,9 +342,6 @@ mc.setdefault("validation_split", 0.2)
 mc.setdefault("early_stopping", True)
 mc.setdefault("patience", 200)
 mc.setdefault("min_nb_epochs", 100)
-
-mc = MODELS_CONFIG.setdefault("w2abc", {})
-mc.setdefault("max_populations", 2)
 
 MODELS_TO_RUN = CONFIG.get("models_to_run", list(MODELS_CONFIG.keys()))
 print(f"Configuration loaded: n={n}, rounds={NUM_ROUNDS}, models={MODELS_TO_RUN}")
@@ -721,7 +716,6 @@ def plot_combined_posteriors(
         "MMD": "#1083CA",  # Blue
         "BAYESFLOW": "#49C926",  # Green
         "DNNABC": "#8315dd",  # Orange/Purple
-        "W2ABC": "#0f12ae",  # Purple/Orange
         "NPE": "#f19327",  # Use W2 color for NPE
         "NLE": "#00A896",  # Teal
         "TD-NPSE": "#6E44FF",  # Indigo
@@ -761,8 +755,6 @@ def plot_combined_posteriors(
                 c = colors["BAYESFLOW"]
             elif "DNN" in label_name:
                 c = colors["DNNABC"]
-            elif "W2" in label_name:
-                c = colors["W2ABC"]
             elif "NLE" in label_name:
                 c = colors["NLE"]
             elif "TD-NPSE" in label_name:
@@ -832,7 +824,6 @@ def plot_combined_posteriors(
         "NLE",
         "TD-NPSE",
         "NPE",
-        "W2ABC",
         "True Posterior",
     ]
 
@@ -1268,7 +1259,7 @@ def run_single_experiment(
     loss_history = []
     training_time = 0.0
     refinement_time = 0.0
-    total_time = 0.0  # For DNNABC/W2ABC
+    total_time = 0.0  # For DNNABC
     td_npse_used_pretrained = False
     nle_used_pretrained = False
 
@@ -1490,11 +1481,6 @@ def run_single_experiment(
                 f"Unknown TD-NPSE eval_mode='{td_eval_mode}'. "
                 "Expected 'reload_checkpoint' or 'train_from_scratch'."
             )
-    elif model_type == "w2abc":
-        print(
-            "W2-ABC does not require neural network training. Proceeding to inference..."
-        )
-        loss_history = []
     elif model_type in ["snpe_a", "npe", "snpe", "snpe_c"]:
         sbi_rounds = model_cfg.get("sbi_rounds", 2)
         sims_per_round = model_cfg.get("sims_per_round", 1000)
@@ -1528,14 +1514,7 @@ def run_single_experiment(
     # Sample from model
     n_samples = N_SAMPLES_POSTERIOR
 
-    if model_type == "w2abc":
-        # W2ABC does inference via SMC, which takes time
-        max_populations = model_cfg.get("max_populations", 2)
-        posterior_samples = run_w2abc(
-            task, x_obs, n_samples=n_samples, max_populations=max_populations
-        )
-        model = "W2ABC_SMC_Sampler"  # Placeholder
-    elif model_type == "nle":
+    if model_type == "nle":
         posterior_samples = model.sample_posterior(x_obs, n_samples=n_samples)
     elif model_type == "td_npse":
         posterior_samples = model.sample_posterior(x_obs, n_samples=n_samples)
@@ -1590,12 +1569,6 @@ def run_single_experiment(
 
     print(f"Posterior Mean: {np.mean(posterior_samples, axis=0)}")
 
-    # Save Amortized Samples
-    save_dir_samples = f"{RESULTS_BASE}/posterior_samples/{model_type}/round_{round_id}"
-    os.makedirs(save_dir_samples, exist_ok=True)
-    np.save(f"{save_dir_samples}/amortized.npy", posterior_samples)
-    print(f"Saved amortized samples to {save_dir_samples}/amortized.npy")
-
     # Plot Amortized Posterior
     plot_dir = f"{RESULTS_BASE}/plots/round_{round_id}/{model_type}"
     plot_posterior(posterior_samples, theta_true, plot_dir, "amortized_posterior.png")
@@ -1606,7 +1579,6 @@ def run_single_experiment(
 
     if model_type in [
         "dnnabc",
-        "w2abc",
         "snpe_a",
         "npe",
         "snpe",
@@ -1634,6 +1606,8 @@ def run_single_experiment(
         nsims = REFINE_CONFIG.get("nsims", 50)
         epsilon = REFINE_CONFIG.get("epsilon", None)
         proposal_std = REFINE_CONFIG.get("proposal_std", 0.2)
+        quantile_level = REFINE_CONFIG.get("quantile_level", 0.002)
+        bandwidth_n_samples = REFINE_CONFIG.get("bandwidth_n_samples", 20000)
 
         refined_samples = refine_posterior(
             model,
@@ -1646,6 +1620,8 @@ def run_single_experiment(
             nsims=nsims,
             epsilon=epsilon,
             proposal_std=proposal_std,
+            quantile_level=quantile_level,
+            bandwidth_n_samples=bandwidth_n_samples,
             device=str(device),
         )
 
@@ -1656,10 +1632,6 @@ def run_single_experiment(
         refined_samples_flat = refined_samples.reshape(-1, d)
 
         print(f"Refined Mean: {np.mean(refined_samples_flat, axis=0)}")
-
-        # Save Refined Samples
-        np.save(f"{save_dir_samples}/refined.npy", refined_samples_flat)
-        print(f"Saved refined samples to {save_dir_samples}/refined.npy")
 
         # Plot Refined Posterior
         plot_posterior(
@@ -1783,7 +1755,7 @@ def main():
             print(f"\n{'=' * 20} ROUND {round_idx}/{NUM_ROUNDS} | seed={round_seed} {'=' * 20}")
 
             print("=== Step 1: Data Generation ===")
-            task = GaussianTask(n=n, prior_type=PRIOR_TYPE)
+            task = GaussianTask(n=n)
             print(f"Generating training data (size={DATASET_SIZE}, n={n})...")
             theta_train, x_train = generate_dataset(task, n_sims=DATASET_SIZE, n_obs=n)
 
@@ -1796,12 +1768,6 @@ def main():
             print("Generating observation...")
             theta_true, x_obs = task.get_ground_truth()
             print(f"True Params: {theta_true}")
-
-            obs_save_dir = f"{RESULTS_BASE}/true_observations/round_{round_idx}"
-            os.makedirs(obs_save_dir, exist_ok=True)
-            np.save(f"{obs_save_dir}/observation.npy", x_obs)
-            np.save(f"{obs_save_dir}/theta_true.npy", theta_true)
-            print(f"Saved true observation to {obs_save_dir}")
 
             print("\n=== Step 2: True Posterior Sampling ===")
             pymc_samples = None
@@ -1830,6 +1796,18 @@ def main():
                         n_tune=TRUE_POSTERIOR_CONFIG.get("n_tune_chain", 1000),
                         chains=TRUE_POSTERIOR_CONFIG.get("chains", 30),
                     )
+                elif method == "folded_nuts":
+                    pymc_samples = run_folded_nuts_true_posterior(
+                        x_obs_2d,
+                        draws=int(TRUE_POSTERIOR_CONFIG.get("draws", 250)),
+                        tune=int(TRUE_POSTERIOR_CONFIG.get("tune", 200)),
+                        chains=int(TRUE_POSTERIOR_CONFIG.get("chains", 4)),
+                        target_accept=float(TRUE_POSTERIOR_CONFIG.get("target_accept", 0.9)),
+                        random_seed=int(TRUE_POSTERIOR_CONFIG.get("random_seed", round_seed * 1000 + 500)),
+                        n_per_quad=int(TRUE_POSTERIOR_CONFIG.get("n_per_quad", 250)),
+                    )
+                    print(f"Folded NUTS true posterior: {pymc_samples.shape} "
+                          f"(stratified, {int(pymc_samples.shape[0]) // 4} per quadrant)", flush=True)
                 elif method == "mcmc":
                     coeff = TRUE_POSTERIOR_CONFIG.get("proposal_scale_coeff", None)
                     if coeff is not None:
@@ -1874,6 +1852,7 @@ def main():
 
             print("\n=== Step 3: Run Model Experiments ===")
             round_samples_for_plot = {}
+            refinement_samples_for_plot = {}
             if pymc_samples is not None:
                 round_samples_for_plot["PyMC"] = pymc_samples
 
@@ -1906,6 +1885,15 @@ def main():
 
                 if result["amortized_samples"] is not None:
                     round_samples_for_plot[model_type] = result["amortized_samples"]
+
+                if (
+                    model_type in ["smmd", "mmd", "bayesflow"]
+                    and result["refined_samples"] is not None
+                ):
+                    refinement_samples_for_plot[model_type] = {
+                        "Amortized": result["amortized_samples"],
+                        "Refined": result["refined_samples"],
+                    }
 
                 mmd_amortized = np.nan
                 mmd_refined = np.nan
@@ -2005,31 +1993,11 @@ def main():
             print(
                 f"Generating all-model refinement comparison plot for Round {round_idx}..."
             )
-            all_refinement_data = {}
-            refinable_models = ["smmd", "mmd", "bayesflow"]
-
-            for m in refinable_models:
-                # Paths
-                base_sample_dir = (
-                    f"{RESULTS_BASE}/posterior_samples/{m}/round_{round_idx}"
-                )
-                p_amortized = f"{base_sample_dir}/amortized.npy"
-                p_refined = f"{base_sample_dir}/refined.npy"
-
-                if os.path.exists(p_amortized) and os.path.exists(p_refined):
-                    try:
-                        sam_amortized = np.load(p_amortized)
-                        sam_refined = np.load(p_refined)
-                        all_refinement_data[m] = {
-                            "Amortized": sam_amortized,
-                            "Refined": sam_refined,
-                        }
-                    except Exception as e:
-                        print(f"Error loading samples for {m}: {e}")
-
-            if all_refinement_data:
+            # Samples are kept in memory (no per-model .npy files are written
+            # to disk anymore) and collected during the model loop above.
+            if refinement_samples_for_plot:
                 plot_all_refinement_comparisons(
-                    all_refinement_data,
+                    refinement_samples_for_plot,
                     theta_true,
                     combined_plot_dir,
                     true_posterior_samples=pymc_samples,
@@ -2041,17 +2009,11 @@ def main():
         if not model_results_table:
             print("Warning: No results to summarize.")
         else:
-            os.makedirs(f"{RESULTS_BASE}/tables", exist_ok=True)
             summary_rows = []
 
             for model_name, rows in model_results_table.items():
                 if not rows:
                     continue
-
-                df_model = pd.DataFrame(rows)
-                table_path = f"{RESULTS_BASE}/tables/{model_name}_results.csv"
-                df_model.to_csv(table_path, index=False)
-                print(f"Saved per-round table for {model_name} to {table_path}")
 
                 per_round_rows = []
                 for r in rows:
@@ -2065,17 +2027,7 @@ def main():
                         }
                     )
 
-                model_dir = f"{RESULTS_BASE}/models/{model_name}"
-                os.makedirs(model_dir, exist_ok=True)
                 per_round_df = pd.DataFrame(per_round_rows)
-                per_round_metrics_path = (
-                    f"{model_dir}/{model_name}_per_round_metrics.csv"
-                )
-                per_round_df.to_csv(per_round_metrics_path, index=False)
-                print(
-                    f"Saved per-round metrics for {model_name} to "
-                    f"{per_round_metrics_path}"
-                )
 
                 mmd_am_vals = per_round_df["MMD_Amortized"].dropna().values
                 mmd_ref_vals = per_round_df["MMD_Refined"].dropna().values

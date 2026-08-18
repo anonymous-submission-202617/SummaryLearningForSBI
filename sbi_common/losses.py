@@ -27,11 +27,12 @@ def mmd_loss(theta_true, theta_fake, *, bandwidths=None, scale=50, normalize=Fal
         theta_true: (batch, d) observed parameters.
         theta_fake: (batch, M, d) simulated parameters.
         bandwidths: Optional (K,) tensor/list of bandwidths (sigma^2).
-            Defaults to ``[10 / scale, 5 / scale]``.
+            Defaults to a mixture of two Gaussian bandwidths proportional to
+            ``1 / scale`` (see the default value in the function body).
         scale: Number of observations per observed sample.  The default
-            bandwidths ``[10 / scale, 5 / scale]`` correspond to kernel widths
-            ``sqrt(h) ~ 3.2 / sqrt(scale)`` and ``~ 2.2 / sqrt(scale)``
-            (members of the ``k^2 / scale`` family with ``k ~ 3.2, 2.2``).
+            bandwidths follow the ``k^2 / scale`` family, i.e. kernel widths
+            ``sqrt(h) ~ k / sqrt(scale)``, so the kernel keeps resolving
+            posterior differences as the sample size grows.
         normalize: If True, weight each kernel by the Gaussian normalization
             coefficient ``(2 * pi * bandwidth)^(-d/2)``.
 
@@ -42,7 +43,7 @@ def mmd_loss(theta_true, theta_fake, *, bandwidths=None, scale=50, normalize=Fal
     device = theta_fake.device
 
     if bandwidths is None:
-        bandwidths = torch.tensor([10.0 / scale, 5.0 / scale], device=device)
+        bandwidths = torch.tensor([10.0 / scale, 15.0 / scale], device=device)
     elif not isinstance(bandwidths, torch.Tensor):
         bandwidths = torch.tensor(bandwidths, device=device, dtype=torch.float32)
     else:

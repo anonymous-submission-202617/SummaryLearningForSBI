@@ -1,89 +1,86 @@
 {
-    "n_time_steps": 151,
-    "dt": 0.2,
-    "num_rounds": 10,
-    "dataset_size": 25600,
-    "val_size": 100,
-    "batch_size": 128,
-    "learning_rate": 0.001,
-    "n_samples_posterior": 1000,
-    "models_to_run": [
-        "smmd",
-        "mmd",
-        "bayesflow",
-        "dnnabc",
-        "snpe_c"
-    ],
-    "models_config": {
-        "smmd": {
-            "epochs": 200,
-            "summary_dim": 8,
-            "refined_mode": 1,
-            "num_refine_rounds": 1,
-            "kde_n_samples": 10000,
-            "sequential_resample_pool_size": 10000,
-            "posterior_sample_batch_size": 1024,
-            "sequential_mixture_coeff": 0.5,
-            "run_mcmc": true
-        },
-        "mmd": {
-            "epochs": 200,
-            "summary_dim": 8,
-            "refined_mode": 1,
-            "num_refine_rounds": 1,
-            "kde_n_samples": 10000,
-            "sequential_resample_pool_size": 10000,
-            "posterior_sample_batch_size": 1024,
-            "sequential_mixture_coeff": 0.5,
-            "run_mcmc": true
-        },
-        "bayesflow": {
-            "epochs": 200,
-            "summary_dim": 8,
-            "l1_lambda": 0.0001,
-            "optimizer": "adamw",
-            "weight_decay": 0.0,
-            "lr_schedule": "cosine",
-            "learning_rate": 0.001,
-            "initial_train_samples": 12800,
-            "refine_train_samples": 12800,
-            "refined_mode": 1,
-            "kde_n_samples": 10000,
-            "sequential_resample_pool_size": 10000,
-            "posterior_sample_batch_size": 1024,
-            "sequential_mixture_coeff": 0.5,
-            "run_mcmc": true
-        },
-        "dnnabc": {
-            "epochs": 400,
-            "train_samples": 25600,
-            "n_pool": 34400
-        },
-        "w2abc": {
-            "max_populations": 2
-        },
-        "npe": {
-            "sbi_rounds": 10,
-            "sims_per_round": 6000,
-            "epochs": 200,
-            "validation_fraction": 0.1,
-            "stop_after_epochs": 200
-        }
+  "n_time_steps": 151,
+  "dt": 0.2,
+  "num_rounds": 100,
+  "dataset_size": 25600,
+  "val_size": 100,
+  "batch_size": 128,
+  "learning_rate": 0.001,
+  "n_samples_posterior": 1000,
+  "models_to_run": [
+    "smmd",
+    "mmd",
+    "bayesflow",
+    "dnnabc",
+    "snpe_c"
+  ],
+  "models_config": {
+    "smmd": {
+      "epochs": 200,
+      "summary_dim": 8,
+      "refined_mode": 1,
+      "num_refine_rounds": 1,
+      "kde_n_samples": 10000,
+      "sequential_resample_pool_size": 10000,
+      "posterior_sample_batch_size": 1024,
+      "sequential_mixture_coeff": 0.5,
+      "run_mcmc": true
     },
-    "smmd_mmd_config": {
-        "M": 50,
-        "L": 20,
-        "initial_train_samples": 12800,
-        "refine_train_samples": 12800,
-        "bandwidth_n_samples": 4400
+    "mmd": {
+      "epochs": 200,
+      "summary_dim": 8,
+      "refined_mode": 1,
+      "num_refine_rounds": 1,
+      "kde_n_samples": 10000,
+      "sequential_resample_pool_size": 10000,
+      "posterior_sample_batch_size": 1024,
+      "sequential_mixture_coeff": 0.5,
+      "run_mcmc": true
     },
-    "refinement_config": {
-        "proposal_std_coeff": 0.5,
-        "mcmc_total_steps": 30,
-        "bandwidth_quantile_level": 0.01
+    "bayesflow": {
+      "epochs": 200,
+      "summary_dim": 8,
+      "l1_lambda": 0.0001,
+      "optimizer": "adamw",
+      "weight_decay": 0.0,
+      "lr_schedule": "cosine",
+      "learning_rate": 0.001,
+      "initial_train_samples": 12800,
+      "refine_train_samples": 12800,
+      "refined_mode": 1,
+      "kde_n_samples": 10000,
+      "sequential_resample_pool_size": 10000,
+      "posterior_sample_batch_size": 1024,
+      "sequential_mixture_coeff": 0.5,
+      "run_mcmc": true
     },
-    "plot_config": {
-        "save_refinement_comparison_plots": true
+    "dnnabc": {
+      "epochs": 400,
+      "train_samples": 25600,
+      "n_pool": 34400
     },
-    "seed": 0
+    "npe": {
+      "sbi_rounds": 10,
+      "sims_per_round": 6000,
+      "epochs": 200,
+      "validation_fraction": 0.1,
+      "stop_after_epochs": 200
+    }
+  },
+  "smmd_mmd_config": {
+    "M": 50,
+    "L": 20,
+    "initial_train_samples": 12800,
+    "refine_train_samples": 12800,
+    "bandwidth_n_samples": 4400
+  },
+  "refinement_config": {
+    "proposal_std_coeff": 0.5,
+    "mcmc_total_steps": 30,
+    "bandwidth_quantile_level": 0.01
+  },
+  "plot_config": {
+    "save_refinement_comparison_plots": true
+  },
+  "seed": 0
 }

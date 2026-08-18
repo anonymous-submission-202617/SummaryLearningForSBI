@@ -11,7 +11,8 @@ from .smmd import SMMD_Model
 
 
 def mmd_loss(theta_true, theta_fake, bandwidths=None, n_time_steps=80):
-    """Multi-scale MMD with normalized kernels and bandwidths ``[10, 5] / n_time_steps``."""
+    """Multi-scale MMD with normalized kernels and a mixture of bandwidths
+    scaled by ``n_time_steps`` (see ``sbi_common.losses.mmd_loss``)."""
     return _mmd_loss(
         theta_true,
         theta_fake,

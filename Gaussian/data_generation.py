@@ -4,7 +4,6 @@ Refactored to include GaussianTask class.
 """
 
 import numpy as np
-import scipy.stats
 
 # ============================================================================
 # 1. Configuration
@@ -25,14 +24,13 @@ TRUE_PARAMS = np.array([1.0, 1.0, -1.0, -0.9, 0.6])
 # ============================================================================
 
 class GaussianTask:
-    def __init__(self, n=n, prior_type='conditional'):
+    def __init__(self, n=n):
         """
         Initialize Gaussian Task.
         n: Number of samples per observation.
-        prior_type: 'uniform' (all independent U[-3, 3])
-                 or 'conditional' (theta[1] | theta[0] ~ TruncNormal(theta[0]**2, 0.1^2; [-3, 3]))
+        Prior: independent uniform on [-3, 3]^5.
         """
-        self.prior_type = prior_type
+        self.prior_type = "uniform"
         self.d = d
         self.n = n
         self.d_x = d_x
@@ -56,21 +54,7 @@ class GaussianTask:
         theta[:, 2] = np.random.uniform(-3.0, 3.0, size=batch_size)
         theta[:, 3] = np.random.uniform(-3.0, 3.0, size=batch_size)
         theta[:, 4] = np.random.uniform(-3.0, 3.0, size=batch_size)
-
-        if self.prior_type == 'conditional':
-            mu = theta[:, 0] ** 2
-            sigma = 0.1
-            alpha = (self.lower[1] - mu) / sigma
-            beta = (self.upper[1] - mu) / sigma
-            theta[:, 1] = scipy.stats.truncnorm.rvs(
-                a=alpha,
-                b=beta,
-                loc=mu,
-                scale=sigma,
-                size=batch_size,
-            )
-        else:
-            theta[:, 1] = np.random.uniform(-3.0, 3.0, size=batch_size)
+        theta[:, 1] = np.random.uniform(-3.0, 3.0, size=batch_size)
 
         return theta.astype(np.float32)
 
@@ -90,28 +74,7 @@ class GaussianTask:
         
         out_of_bounds = np.any((theta < self.lower) | (theta > self.upper), axis=1)
         log_probs[out_of_bounds] = -np.inf
-        
-        if self.prior_type == 'conditional':
-            # log p(theta) = log p(theta_1 | theta_0) under a truncated normal on [-3, 3],
-            # plus constants from the bounded uniform dims.
-            mask = ~out_of_bounds
-            if np.any(mask):
-                t0 = theta[mask, 0]
-                t1 = theta[mask, 1]
-                sigma = 0.1
-                mu = t0**2
-                a = (t1 - mu) / sigma
-                alpha = (self.lower[1] - mu) / sigma
-                beta = (self.upper[1] - mu) / sigma
-                z = scipy.stats.norm.cdf(beta) - scipy.stats.norm.cdf(alpha)
-                z = np.clip(z, 1e-300, None)
-                log_probs[mask] += (
-                    -0.5 * a**2
-                    - np.log(sigma)
-                    - 0.5 * np.log(2.0 * np.pi)
-                    - np.log(z)
-                )
-        
+
         if not is_batch:
             return log_probs[0]
         return log_probs
@@ -205,7 +168,7 @@ def generate_dataset(task=None, n_sims=N, n_obs=None):
     Generates the Reference Table (Theta, X) for training.
     """
     if task is None:
-        task = GaussianTask(prior_type='conditional')
+        task = GaussianTask()
     
     if n_obs is None:
         n_obs = task.n
@@ -222,7 +185,7 @@ def generate_dataset(task=None, n_sims=N, n_obs=None):
 
 if __name__ == "__main__":
     # Test
-    task = GaussianTask(prior_type='conditional')
+    task = GaussianTask()
     t, x = generate_dataset(task, n_sims=10)
     print("Theta shape:", t.shape)
     

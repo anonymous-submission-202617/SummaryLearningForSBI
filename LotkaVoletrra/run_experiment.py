@@ -1,6 +1,6 @@
 
 """
-Run Experiment for Lotka-Volterra Task with SMMD/MMD/BayesFlow/DNNABC/W2ABC.
+Run Experiment for Lotka-Volterra Task with SMMD/MMD/BayesFlow/DNNABC.
 Migrated from Gaussian Task.
 """
 
@@ -45,7 +45,6 @@ from models.smmd import SMMD_Model, sliced_mmd_loss
 from models.mmd import MMD_Model, mmd_loss
 from models.bayesflow_net import build_bayesflow_model, box_to_unconstrained, unconstrained_to_box
 from models.dnnabc import DNNABC_Model, train_dnnabc, abc_rejection_sampling
-from models.w2abc import run_w2abc
 from models.sbi_wrappers import run_sbi_model
 from models.theta_transforms import scale_theta_np
 from utilities import (
@@ -95,13 +94,13 @@ except (FileNotFoundError, TypeError):
         "val_size": 1000,
         "batch_size": 128,
         "num_rounds": 5,
-        "models_to_run": ["smmd", "mmd", "bayesflow", "dnnabc", "w2abc"],
+        "models_to_run": ["smmd", "mmd", "bayesflow", "dnnabc"],
         "models_config": {},
         "n_observation": 151,
         "refinement_config": {
             "proposal_std_coeff": 0.5,
             "bandwidth_quantile_level": 0.01,
-            "likelihood_n_replicates": 5
+            "n_sims": 1
         },
         "plot_config": {
             "save_refinement_comparison_plots": True
@@ -181,7 +180,7 @@ SMMD_REFINE_TRAIN_SAMPLES = SMMD_MMD_CONFIG.get("refine_train_samples", DATASET_
 BANDWIDTH_N_SAMPLES = SMMD_MMD_CONFIG.get("bandwidth_n_samples", 4400)
 MCMC_PROPOSAL_STD = REFINEMENT_CONFIG.get("proposal_std_coeff", 0.5)
 BANDWIDTH_QUANTILE_LEVEL = REFINEMENT_CONFIG.get("bandwidth_quantile_level", 0.01)
-LIKELIHOOD_N_REPLICATES = int(REFINEMENT_CONFIG.get("likelihood_n_replicates", 5))
+N_SIMS = int(REFINEMENT_CONFIG.get("n_sims", 1))
 MCMC_TOTAL_STEPS = int(REFINEMENT_CONFIG.get("mcmc_total_steps", 30))
 
 N_TIME_STEPS = CONFIG.get("n_time_steps", 151)
@@ -1742,8 +1741,6 @@ def run_single_experiment(model_type, task, train_loader, theta_true, x_obs, rou
         model = DNNABC_Model(d=d, d_x=d_x)
         loss_history = train_dnnabc(model, train_loader, epochs, DEVICE)
         training_time = 0 # Tracked elsewhere or ignored for now
-    elif model_type == "w2abc":
-        print("W2-ABC: No training required.")
     elif model_type in ["snpe_a", "snpe_b", "npe", "snpe", "snpe_c"]:
         # SBI Models train and sample in one go (for this implementation)
         pass
@@ -1754,10 +1751,7 @@ def run_single_experiment(model_type, task, train_loader, theta_true, x_obs, rou
     
     t_start_sample = time.time()
     
-    if model_type == "w2abc":
-        max_populations = model_config.get("max_populations", 2)
-        posterior_samples = run_w2abc(task, x_obs, n_samples=n_samples, max_populations=max_populations)
-    elif model_type in ["snpe_a", "snpe_b", "npe", "snpe", "snpe_c"]:
+    if model_type in ["snpe_a", "snpe_b", "npe", "snpe", "snpe_c"]:
         num_rounds = model_config.get("sbi_rounds", 1)
         sims_per_round = model_config.get("sims_per_round", 1000)
         max_epochs = model_config.get("epochs", 1000)
@@ -2125,7 +2119,7 @@ def run_single_experiment(model_type, task, train_loader, theta_true, x_obs, rou
             
         print(f"\n--- Performing ABC-MCMC Local Refinement for {model_type} ---")
         t_mcmc_start = time.time()
-        print(f"   Likelihood replicates per proposal: {LIKELIHOOD_N_REPLICATES}")
+        print(f"   n_sims per proposal: {N_SIMS}")
         
         # Ensure model is in eval mode
         if hasattr(model, "eval"): model.eval()
@@ -2146,7 +2140,7 @@ def run_single_experiment(model_type, task, train_loader, theta_true, x_obs, rou
                                      bandwidth_n_samples=BANDWIDTH_N_SAMPLES,
                                      bandwidth_quantile_level=BANDWIDTH_QUANTILE_LEVEL,
                                      preprocess_obs_fn=preprocess_observations,
-                                     n_likelihood_replicates=LIKELIHOOD_N_REPLICATES,
+                                     n_sims=N_SIMS,
                                      bandwidth_plot_path=f"{refine_dir}/summary_distance_distribution.png") 
  
         
