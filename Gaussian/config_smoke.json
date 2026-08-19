@@ -12,21 +12,20 @@
   "swd_max_samples": 64,
   "num_rounds": 1,
   "true_posterior_config": {
-    "method": "folded_nuts",
-    "draws": 20,
-    "tune": 20,
-    "chains": 2,
-    "target_accept": 0.9,
-    "n_per_quad": 8
+    "method": "mcmc",
+    "n_draws": 1,
+    "n_tune_chain": 8,
+    "chains": 4,
+    "proposal_scale_coeff": 0.45
   },
   "refine_config": {
     "n_chains": 8,
     "burn_in": 2,
     "thin": 1,
     "nsims": 1,
-    "proposal_std": 0.4,
+    "proposal_std": 0.2,
     "epsilon": null,
-    "quantile_level": 0.002,
+    "quantile_level": 0.01,
     "bandwidth_n_samples": 64
   },
   "models_to_run": [

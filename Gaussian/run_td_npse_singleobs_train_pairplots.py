@@ -22,7 +22,7 @@ from torch.utils.data import DataLoader
 
 from data_generation import GaussianTask, TRUE_PARAMS, generate_dataset
 from models.td_npse import FullSingleObservationDataset, TDNPSE_Model, train_td_npse
-from utilities import compute_mmd_metric, compute_swd_metric, run_gaussian_posterior_mcmc, run_folded_nuts_true_posterior
+from utilities import compute_mmd_metric, compute_swd_metric, run_gaussian_posterior_mcmc
 
 
 def set_seed(seed: int) -> None:
@@ -291,8 +291,6 @@ def evaluate_trial_metrics(
     swd_n_projections: int,
     swd_max_samples: int,
     metric_max_samples: int,
-    method: str = "folded_nuts",
-    target_accept: float = 0.9,
 ) -> Dict[str, float]:
     t_true0 = time.time()
     true_samples = compute_true_posterior_samples(
@@ -303,8 +301,6 @@ def evaluate_trial_metrics(
         n_tune=int(n_tune),
         chains=int(chains),
         proposal_scale_coeff=float(proposal_scale_coeff),
-        method=str(method),
-        target_accept=float(target_accept),
     )
     true_time = float(time.time() - t_true0)
 
@@ -367,21 +363,8 @@ def compute_true_posterior_samples(
     n_tune: int,
     chains: int,
     proposal_scale_coeff: float,
-    method: str = "folded_nuts",
-    target_accept: float = 0.9,
-    n_per_quad: int = 250,
 ) -> np.ndarray:
     x_obs_2d = invert_stereo_projection(x_obs_3d)
-    if str(method).lower() == "folded_nuts":
-        return run_folded_nuts_true_posterior(
-            x_obs_2d,
-            draws=int(n_draws),
-            tune=int(n_tune),
-            chains=int(chains),
-            target_accept=float(target_accept),
-            random_seed=int(seed),
-            n_per_quad=int(n_per_quad),
-        )
     proposal_scale = float(proposal_scale_coeff) / float(np.sqrt(float(x_obs_2d.shape[0])))
     state = np.random.get_state()
     np.random.seed(int(seed))
@@ -558,18 +541,16 @@ def main() -> None:
     parser.add_argument("--tall-score-mode", default="gauss_clip")
     parser.add_argument("--symmetry-mode-sampling-dims", default="2,3")
     parser.add_argument("--covariance-symmetry-dims", default="")
-    parser.add_argument("--n-samples-posterior", type=int, default=1000)
+    parser.add_argument("--n-samples-posterior", type=int, default=2000)
     parser.add_argument("--pairplot-max-points", type=int, default=1500)
-    parser.add_argument("--true-method", default="folded_nuts")
-    parser.add_argument("--true-draws", type=int, default=250)
-    parser.add_argument("--true-tune", type=int, default=200)
-    parser.add_argument("--true-chains", type=int, default=4)
-    parser.add_argument("--true-target-accept", type=float, default=0.9)
+    parser.add_argument("--true-draws", type=int, default=1)
+    parser.add_argument("--true-tune", type=int, default=1000)
+    parser.add_argument("--true-chains", type=int, default=2000)
     parser.add_argument("--true-proposal-scale-coeff", type=float, default=0.55)
     parser.add_argument("--metric-num-trials", type=int, default=10)
-    parser.add_argument("--metric-max-samples", type=int, default=1000)
+    parser.add_argument("--metric-max-samples", type=int, default=2000)
     parser.add_argument("--swd-n-projections", type=int, default=1000)
-    parser.add_argument("--swd-max-samples", type=int, default=1000)
+    parser.add_argument("--swd-max-samples", type=int, default=2000)
     parser.add_argument("--output-dir", default="results/td_npse_singleobs_train_pairplots")
     args = parser.parse_args()
 
@@ -716,8 +697,6 @@ def main() -> None:
             n_tune=int(args.true_tune),
             chains=int(args.true_chains),
             proposal_scale_coeff=float(args.true_proposal_scale_coeff),
-            method=str(args.true_method),
-            target_accept=float(args.true_target_accept),
         )
         true_time = float(time.time() - t_true0)
         np.save(artifacts_dir / f"true_posterior_samples_n{n_obs}.npy", true_samples)
@@ -771,8 +750,6 @@ def main() -> None:
                 n_tune=int(args.true_tune),
                 chains=int(args.true_chains),
                 proposal_scale_coeff=float(args.true_proposal_scale_coeff),
-                method=str(args.true_method),
-                target_accept=float(args.true_target_accept),
                 swd_n_projections=int(args.swd_n_projections),
                 swd_max_samples=int(args.swd_max_samples),
                 metric_max_samples=int(args.metric_max_samples),

@@ -20,6 +20,4 @@ dependencies:
       - keras==3.13.2
       - pyabc==0.12.16
       - pot==0.9.6.post1
-      - pymc==5.27.1
-      - arviz==0.23.1
       - jupyter==1.1.1

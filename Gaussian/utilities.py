@@ -78,7 +78,7 @@ def propose_mixed_random_walk(current_theta, proposal_scale, lower, upper, bound
 def run_mcmc_refinement(current_theta, x_obs_stats, task, 
                        log_prior_fn, log_likelihood_fn, 
                        n_chains, n_samples, burn_in, thin, 
-                       proposal_std=0.5):
+                       proposal_std=0.2):
     """
     Generic MCMC refinement loop (random-walk Metropolis--Hastings in theta space).
 
@@ -357,7 +357,7 @@ def approximate_likelihood_core(theta, x_obs_stats, task, stats_fn, nsims, epsil
 # SMMD/MMD Implementation
 # =============================================================================
 
-def compute_bandwidth_smmd(model, x_obs, task, n_samples=20000, quantile_level=0.002, device="cpu"):
+def compute_bandwidth_smmd(model, x_obs, task, n_samples=20000, quantile_level=0.01, device="cpu"):
     print("Computing bandwidth for SMMD refinement...")
     x_obs_tensor = torch.from_numpy(x_obs[np.newaxis, ...]).float().to(device)
     x_obs_batch = x_obs_tensor.expand(n_samples, -1, -1)
@@ -371,9 +371,9 @@ def compute_bandwidth_smmd(model, x_obs, task, n_samples=20000, quantile_level=0
     return compute_bandwidth_core(Theta0_np, x_obs_tensor, task, model.T, n_samples, quantile_level, device)
 
 def refine_posterior_smmd(model, x_obs, task, 
-                         n_chains=1000, n_samples=1, burn_in=99, 
+                         n_chains=2000, n_samples=1, burn_in=99, 
                          thin=1, nsims=1, epsilon=None, proposal_std=0.2, device="cpu",
-                         quantile_level=0.002, bandwidth_n_samples=20000):
+                         quantile_level=0.01, bandwidth_n_samples=20000):
     print(f"Starting SMMD MCMC Refinement...")
     
     if epsilon is None:
@@ -404,7 +404,7 @@ def refine_posterior_smmd(model, x_obs, task,
 # BayesFlow Implementation
 # =============================================================================
 
-def compute_bandwidth_bayesflow(model, x_obs, task, n_samples=20000, quantile_level=0.002, device="cpu"):
+def compute_bandwidth_bayesflow(model, x_obs, task, n_samples=20000, quantile_level=0.01, device="cpu"):
     print("Computing bandwidth for BayesFlow refinement...")
     x_obs_tensor = torch.from_numpy(x_obs[np.newaxis, ...]).float().to(device)
     
@@ -434,9 +434,9 @@ def compute_bandwidth_bayesflow(model, x_obs, task, n_samples=20000, quantile_le
     return compute_bandwidth_core(Theta0_np, x_obs_tensor, task, model.summary_network, n_samples, quantile_level, device)
 
 def refine_posterior_bayesflow(model, x_obs, task, 
-                              n_chains=1000, n_samples=1, burn_in=99, 
+                              n_chains=2000, n_samples=1, burn_in=99, 
                               thin=1, nsims=1, epsilon=None, proposal_std=0.2, device="cpu",
-                              quantile_level=0.002, bandwidth_n_samples=20000):
+                              quantile_level=0.01, bandwidth_n_samples=20000):
     print(f"Starting BayesFlow MCMC Refinement...")
     
     if epsilon is None:
@@ -489,81 +489,6 @@ def compute_bandwidth_torch(model, *args, **kwargs):
         return compute_bandwidth_bayesflow(model, *args, **kwargs)
     else:
         return compute_bandwidth_smmd(model, *args, **kwargs)
-
-# =============================================================================
-# Folded NUTS true posterior (validated protocol, RefineDiagnostics)
-# =============================================================================
-# The Gaussian likelihood depends on theta_3/theta_4 only through their
-# squares and the prior is symmetric, so the posterior is exactly symmetric
-# under (theta_3, theta_4) -> (-theta_3, -theta_4).  We sample the FOLDED
-# posterior (theta_3, theta_4 in [0, 3]) with PyMC NUTS, reflect each draw to
-# the four sign modes, and return a balanced stratified subsample
-# (exactly n_per_quad per quadrant), matching the validated metric protocol.
-
-_FOLDED_LOWER = np.array([-3.0, -3.0, 0.0, 0.0, -3.0])
-_FOLDED_UPPER = np.array([3.0, 3.0, 3.0, 3.0, 3.0])
-
-
-def _reflect_folded(folded_samples):
-    """Exact symmetrization: map each folded draw to the 4 sign modes of
-    (theta_3, theta_4), preserving the posterior mass exactly."""
-    folded = np.asarray(folded_samples, dtype=np.float64)
-    n = len(folded)
-    out = np.empty((4 * n, 5), dtype=np.float64)
-    out[0::4] = folded
-    out[1::4] = folded
-    out[1::4][:, 2] = -folded[:, 2]
-    out[2::4] = folded
-    out[2::4][:, 3] = -folded[:, 3]
-    out[3::4] = folded
-    out[3::4][:, 2] = -folded[:, 2]
-    out[3::4][:, 3] = -folded[:, 3]
-    return out
-
-
-def _stratified_true_ref(ref, n_per_quad=250, seed=0):
-    """Subsample a reflected reference pool keeping EXACTLY n_per_quad samples
-    per (theta_3, theta_4) quadrant, so the 25/25/25/25 balance is preserved
-    in every metric evaluation."""
-    ref = np.asarray(ref, dtype=np.float64)
-    s3 = ref[:, 2] >= 0
-    s4 = ref[:, 3] >= 0
-    masks = [s3 & s4, s3 & ~s4, ~s3 & s4, ~s3 & ~s4]
-    idx = []
-    for q, m in enumerate(masks):
-        j = np.where(m)[0]
-        rng = np.random.RandomState(seed + q * 101)
-        idx.append(rng.choice(j, size=min(int(n_per_quad), len(j)), replace=False))
-    return ref[np.concatenate(idx)]
-
-
-def run_folded_nuts_true_posterior(x_obs_2d, draws=250, tune=200, chains=4,
-                                   target_accept=0.9, random_seed=0,
-                                   n_per_quad=250, progressbar=False):
-    """True posterior samples: folded NUTS + exact sign reflection +
-    balanced stratified subsample (returns (4 * n_per_quad, 5))."""
-    try:
-        import pymc as pm
-        import pytensor.tensor as pt
-    except Exception as e:
-        raise ImportError(f"PyMC is required for folded NUTS: {e}")
-
-    with pm.Model() as m:
-        theta = pm.Uniform("theta", lower=_FOLDED_LOWER, upper=_FOLDED_UPPER, shape=5)
-        m0, m1, u3, u4, r = theta[0], theta[1], theta[2], theta[3], theta[4]
-        rho = pt.tanh(r)
-        cov = pt.stack([
-            pt.stack([u3 ** 4, rho * u3 ** 2 * u4 ** 2]),
-            pt.stack([rho * u3 ** 2 * u4 ** 2, u4 ** 4]),
-        ])
-        pm.MvNormal("obs", mu=pt.stack([m0, m1]), cov=cov, observed=x_obs_2d)
-        idata = pm.sample(draws=int(draws), tune=int(tune), chains=int(chains),
-                          cores=1, target_accept=float(target_accept),
-                          progressbar=progressbar, random_seed=int(random_seed))
-    folded = np.asarray(idata.posterior["theta"].values, dtype=np.float64).reshape(-1, 5)
-    ref_pool = _reflect_folded(folded)
-    return _stratified_true_ref(ref_pool, n_per_quad=int(n_per_quad), seed=int(random_seed))
-
 
 # =============================================================================
 # MMD Metric (Evaluation)
@@ -701,20 +626,3 @@ def compute_swd_metric(
         seed=int(seed),
     )
     return float(swd)
-
-def test_gaussian_posterior_mcmc():
-    from data_generation import GaussianTask
-    task = GaussianTask()
-    theta_true, x_obs_3d = task.get_ground_truth()
-    X_comp = x_obs_3d[:, 0]
-    Y_comp = x_obs_3d[:, 1]
-    Z_comp = x_obs_3d[:, 2]
-    denom = 1.0 - Z_comp
-    denom[np.abs(denom) < 1e-6] = 1e-6
-    x_2d = X_comp / denom
-    y_2d = Y_comp / denom
-    x_obs_2d = np.stack([x_2d, y_2d], axis=-1)
-    samples = run_gaussian_posterior_mcmc(x_obs_2d, task, n_draws=200, n_tune_chain=100, chains=16, proposal_scale=0.3)
-    print("MCMC test samples shape:", samples.shape)
-    print("MCMC test sample mean:", np.mean(samples, axis=0))
-    print("Theta true:", theta_true)

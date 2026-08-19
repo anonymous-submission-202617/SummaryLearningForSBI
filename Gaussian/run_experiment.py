@@ -47,7 +47,6 @@ from utilities import (
     compute_mmd_metric,
     compute_swd_metric,
     run_gaussian_posterior_mcmc,
-    run_folded_nuts_true_posterior,
 )
 
 
@@ -112,7 +111,6 @@ def _global_autograd(enabled: bool):
         yield
     finally:
         torch.set_grad_enabled(previous)
-from pymc_sampler import run_pymc
 
 # Try importing BayesFlow (optional)
 try:
@@ -139,7 +137,7 @@ NUM_ROUNDS = 5
 n = 50
 RESULTS_BASE = os.path.join(_SCRIPT_DIR, "results")
 N_OBS_LIST = None
-N_SAMPLES_POSTERIOR = 1000
+N_SAMPLES_POSTERIOR = 2000
 RESULTS_SUFFIX = os.environ.get("GAUSSIAN_RESULTS_SUFFIX", "")
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -252,7 +250,7 @@ TRUE_POSTERIOR_CONFIG = CONFIG.get(
 REFINE_CONFIG = CONFIG.get(
     "refine_config",
     {
-        "n_chains": 1000,
+        "n_chains": 2000,
         "burn_in": 99,
         "thin": 1,
         "nsims": 1,
@@ -719,7 +717,7 @@ def plot_combined_posteriors(
         "NPE": "#f19327",  # Use W2 color for NPE
         "NLE": "#00A896",  # Teal
         "TD-NPSE": "#6E44FF",  # Indigo
-        "PYMC": "#363336",  # Dark Grey for True Posterior
+        "TRUEPOSTERIOR": "#363336",  # Dark Grey for True Posterior
         "TRUE": "#FA0101",  # Red for True Value line
     }
 
@@ -761,11 +759,11 @@ def plot_combined_posteriors(
                 c = colors["TD-NPSE"]
             elif "NPE" in label_name or "SNPE" in label_name:
                 c = colors["NPE"]
-            elif "PYMC" in label_name:
-                c = colors["PYMC"]
+            elif "TRUEPOSTERIOR" in label_name:
+                c = colors["TRUEPOSTERIOR"]
 
             # Plot
-            if "PYMC" in label_name:
+            if "TRUEPOSTERIOR" in label_name:
                 sns.kdeplot(
                     x=samples[:, dim_idx],
                     label="True Posterior",
@@ -786,9 +784,6 @@ def plot_combined_posteriors(
                     linewidth=4.5,
                 )
 
-        # True Value line removed as requested
-        # if dim_idx < len(theta_true):
-        #     ax.axvline(x=theta_true[dim_idx], color=colors["TRUE"], linestyle='-', linewidth=3.5, label='True Value', alpha=0.9)
 
         ax.set_title(param_names[i], fontsize=title_fontsize, fontweight="bold", pad=15)
         ax.tick_params(
@@ -804,11 +799,9 @@ def plot_combined_posteriors(
             ax.set_ylabel("Density", fontsize=label_fontsize, fontweight="bold")
         else:
             ax.set_ylabel("")
-            # ax.tick_params(axis='y', labelleft=False) # Keep y-ticks visible for better readability
 
         ax.set_xlim(x_limits[i])
 
-        # sns.despine(ax=ax, left=True if i > 0 else False) # Remove despine for cleaner box look
         ax.grid(True, linestyle="--", alpha=0.4, linewidth=1.0)
 
     # Legend handling
@@ -831,9 +824,7 @@ def plot_combined_posteriors(
     handles_sorted = []
     labels_sorted = []
     for l in order:
-        # Check if any label contains this key (exact match or substring)
-        # Actually existing labels are likely "SMMD", "MMD", "BAYESFLOW", "DNNABC", "NPE", "PYMC" (mapped to True Posterior)
-        # Let's try to match existing keys
+        # Match legend entries by label (exact match or substring).
         for k in by_label.keys():
             if l == "True Posterior" and k == "True Posterior":
                 handles_sorted.append(by_label[k])
@@ -984,9 +975,6 @@ def plot_refinement_comparison(
                     linewidth=4.5,
                 )
 
-        # True Value line removed as requested
-        # if dim_idx < len(theta_true):
-        #     ax.axvline(x=theta_true[dim_idx], color=colors["True Value"], linestyle='-', linewidth=3.5, label='True Value', alpha=0.9)
 
         ax.set_title(param_names[i], fontsize=title_fontsize, fontweight="bold", pad=15)
         ax.tick_params(
@@ -1002,11 +990,9 @@ def plot_refinement_comparison(
             ax.set_ylabel("Density", fontsize=label_fontsize, fontweight="bold")
         else:
             ax.set_ylabel("")
-            # ax.tick_params(axis='y', labelleft=False)
 
         ax.set_xlim(x_limits[i])
 
-        # sns.despine(ax=ax, left=True if i > 0 else False)
         ax.grid(True, linestyle="--", alpha=0.4, linewidth=1.0)
 
     # Legend
@@ -1174,11 +1160,9 @@ def plot_all_refinement_comparisons(
             ax.set_ylabel("Density", fontsize=label_fontsize, fontweight="bold")
         else:
             ax.set_ylabel("")
-            # ax.tick_params(axis='y', labelleft=False)
 
         ax.set_xlim(x_limits[i])
 
-        # sns.despine(ax=ax, left=True if i > 0 else False)
         ax.grid(True, linestyle="--", alpha=0.4, linewidth=1.0)
 
     # Legend
@@ -1586,7 +1570,7 @@ def run_single_experiment(
         "nle",
         "td_npse",
     ]:
-        print(f"--- Skipping Local Refinement for {model_type} (as requested) ---")
+        print(f"--- Skipping Local Refinement for {model_type} ---")
         refined_samples_flat = posterior_samples
         eval_wall_time = time.time() - t_start_total
         total_time = (
@@ -1600,13 +1584,13 @@ def run_single_experiment(
         t_refine_start = time.time()
 
         # Refinement parameters
-        n_chains = REFINE_CONFIG.get("n_chains", 1000)
+        n_chains = REFINE_CONFIG.get("n_chains", 2000)
         burn_in = REFINE_CONFIG.get("burn_in", 99)
         thin = REFINE_CONFIG.get("thin", 1)
         nsims = REFINE_CONFIG.get("nsims", 50)
         epsilon = REFINE_CONFIG.get("epsilon", None)
         proposal_std = REFINE_CONFIG.get("proposal_std", 0.2)
-        quantile_level = REFINE_CONFIG.get("quantile_level", 0.002)
+        quantile_level = REFINE_CONFIG.get("quantile_level", 0.01)
         bandwidth_n_samples = REFINE_CONFIG.get("bandwidth_n_samples", 20000)
 
         refined_samples = refine_posterior(
@@ -1770,7 +1754,7 @@ def main():
             print(f"True Params: {theta_true}")
 
             print("\n=== Step 2: True Posterior Sampling ===")
-            pymc_samples = None
+            true_samples = None
             try:
                 X_comp = x_obs[:, 0]
                 Y_comp = x_obs[:, 1]
@@ -1788,73 +1772,50 @@ def main():
                     f"Shape: {x_obs_2d.shape}"
                 )
 
-                method = TRUE_POSTERIOR_CONFIG.get("method", "mcmc").lower()
-                if method == "pymc":
-                    pymc_samples = run_pymc(
-                        x_obs_2d,
-                        n_draws=TRUE_POSTERIOR_CONFIG.get("n_draws", 2000),
-                        n_tune=TRUE_POSTERIOR_CONFIG.get("n_tune_chain", 1000),
-                        chains=TRUE_POSTERIOR_CONFIG.get("chains", 30),
-                    )
-                elif method == "folded_nuts":
-                    pymc_samples = run_folded_nuts_true_posterior(
-                        x_obs_2d,
-                        draws=int(TRUE_POSTERIOR_CONFIG.get("draws", 250)),
-                        tune=int(TRUE_POSTERIOR_CONFIG.get("tune", 200)),
-                        chains=int(TRUE_POSTERIOR_CONFIG.get("chains", 4)),
-                        target_accept=float(TRUE_POSTERIOR_CONFIG.get("target_accept", 0.9)),
-                        random_seed=int(TRUE_POSTERIOR_CONFIG.get("random_seed", round_seed * 1000 + 500)),
-                        n_per_quad=int(TRUE_POSTERIOR_CONFIG.get("n_per_quad", 250)),
-                    )
-                    print(f"Folded NUTS true posterior: {pymc_samples.shape} "
-                          f"(stratified, {int(pymc_samples.shape[0]) // 4} per quadrant)", flush=True)
-                elif method == "mcmc":
-                    coeff = TRUE_POSTERIOR_CONFIG.get("proposal_scale_coeff", None)
-                    if coeff is not None:
-                        proposal_scale = float(coeff) / float(np.sqrt(float(n)))
-                    else:
-                        base_scale = float(
-                            TRUE_POSTERIOR_CONFIG.get("proposal_scale", 0.06)
-                        )
-                        ref_n = float(
-                            TRUE_POSTERIOR_CONFIG.get(
-                                "proposal_scale_reference_n", 25.0
-                            )
-                        )
-                        proposal_scale = base_scale * float(np.sqrt(ref_n / float(n)))
-                    print(
-                        f"True posterior MCMC proposal_scale={proposal_scale:.6g} (n_obs={n})"
-                    )
-                    pymc_samples = run_gaussian_posterior_mcmc(
-                        x_obs_2d,
-                        task,
-                        n_draws=TRUE_POSTERIOR_CONFIG.get("n_draws", 2000),
-                        n_tune_chain=TRUE_POSTERIOR_CONFIG.get("n_tune_chain", 1000),
-                        chains=TRUE_POSTERIOR_CONFIG.get("chains", 30),
-                        proposal_scale=proposal_scale,
-                    )
+                coeff = TRUE_POSTERIOR_CONFIG.get("proposal_scale_coeff", None)
+                if coeff is not None:
+                    proposal_scale = float(coeff) / float(np.sqrt(float(n)))
                 else:
-                    raise ValueError(f"Unknown true_posterior_config.method '{method}'")
-
-                print(f"PyMC Samples Shape: {pymc_samples.shape}")
-                pymc_plot_dir = f"{RESULTS_BASE}/plots/round_{round_idx}/pymc"
-                plot_posterior(pymc_samples, theta_true, pymc_plot_dir, "posterior.png")
-
-                pymc_save_dir = (
-                    f"{RESULTS_BASE}/posterior_samples/pymc_reference/round_{round_idx}"
+                    base_scale = float(
+                        TRUE_POSTERIOR_CONFIG.get("proposal_scale", 0.06)
+                    )
+                    ref_n = float(
+                        TRUE_POSTERIOR_CONFIG.get(
+                            "proposal_scale_reference_n", 25.0
+                        )
+                    )
+                    proposal_scale = base_scale * float(np.sqrt(ref_n / float(n)))
+                print(
+                    f"True posterior MCMC proposal_scale={proposal_scale:.6g} (n_obs={n})"
                 )
-                os.makedirs(pymc_save_dir, exist_ok=True)
-                np.save(f"{pymc_save_dir}/samples.npy", pymc_samples)
-                print(f"Saved PyMC samples to {pymc_save_dir}/samples.npy")
+                true_samples = run_gaussian_posterior_mcmc(
+                    x_obs_2d,
+                    task,
+                    n_draws=TRUE_POSTERIOR_CONFIG.get("n_draws", 2000),
+                    n_tune_chain=TRUE_POSTERIOR_CONFIG.get("n_tune_chain", 1000),
+                    chains=TRUE_POSTERIOR_CONFIG.get("chains", 30),
+                    proposal_scale=proposal_scale,
+                )
+
+                print(f"True Posterior Samples Shape: {true_samples.shape}")
+                true_plot_dir = f"{RESULTS_BASE}/plots/round_{round_idx}/true_posterior"
+                plot_posterior(true_samples, theta_true, true_plot_dir, "posterior.png")
+
+                true_save_dir = (
+                    f"{RESULTS_BASE}/posterior_samples/true_reference/round_{round_idx}"
+                )
+                os.makedirs(true_save_dir, exist_ok=True)
+                np.save(f"{true_save_dir}/samples.npy", true_samples)
+                print(f"Saved true posterior samples to {true_save_dir}/samples.npy")
             except Exception as e:
-                print(f"PyMC Sampling failed: {e}")
-                pymc_samples = None
+                print(f"True posterior sampling failed: {e}")
+                true_samples = None
 
             print("\n=== Step 3: Run Model Experiments ===")
             round_samples_for_plot = {}
             refinement_samples_for_plot = {}
-            if pymc_samples is not None:
-                round_samples_for_plot["PyMC"] = pymc_samples
+            if true_samples is not None:
+                round_samples_for_plot["TruePosterior"] = true_samples
 
             current_models_to_run = MODELS_TO_RUN
             if isinstance(current_models_to_run, str):
@@ -1877,7 +1838,7 @@ def main():
                     device=DEVICE,
                     n_obs=n,
                     initial_training_data=initial_data,
-                    true_posterior_samples=pymc_samples,
+                    true_posterior_samples=true_samples,
                 )
 
                 if result is None:
@@ -1900,19 +1861,19 @@ def main():
                 swd_amortized = np.nan
                 swd_refined = np.nan
 
-                if pymc_samples is not None:
+                if true_samples is not None:
                     swd_scale = float(np.sqrt(float(n)))
                     if result["amortized_samples"] is not None:
                         mmd_amortized = compute_mmd_metric(
-                            result["amortized_samples"], pymc_samples
+                            result["amortized_samples"], true_samples
                         )
                         print(f"MMD ({model_type} Amortized): {mmd_amortized:.4f}")
                         swd_amortized = compute_swd_metric(
                             np.asarray(result["amortized_samples"], dtype=np.float32)
                             * swd_scale,
-                            np.asarray(pymc_samples, dtype=np.float32) * swd_scale,
+                            np.asarray(true_samples, dtype=np.float32) * swd_scale,
                             n_projections=int(CONFIG.get("swd_n_projections", 1000)),
-                            max_samples=int(CONFIG.get("swd_max_samples", 1000)),
+                            max_samples=int(CONFIG.get("swd_max_samples", 2000)),
                             seed=round_seed,
                         )
                         print(
@@ -1924,22 +1885,22 @@ def main():
                         and result["refined_samples"] is not None
                     ):
                         mmd_refined = compute_mmd_metric(
-                            result["refined_samples"], pymc_samples
+                            result["refined_samples"], true_samples
                         )
                         print(f"MMD ({model_type} Refined): {mmd_refined:.4f}")
                         swd_refined = compute_swd_metric(
                             np.asarray(result["refined_samples"], dtype=np.float32)
                             * swd_scale,
-                            np.asarray(pymc_samples, dtype=np.float32) * swd_scale,
+                            np.asarray(true_samples, dtype=np.float32) * swd_scale,
                             n_projections=int(CONFIG.get("swd_n_projections", 1000)),
-                            max_samples=int(CONFIG.get("swd_max_samples", 1000)),
+                            max_samples=int(CONFIG.get("swd_max_samples", 2000)),
                             seed=round_seed,
                         )
                         print(
                             f"SWD ({model_type} Refined, scaled by sqrt(n_obs)): {swd_refined:.4f}"
                         )
                 else:
-                    print("Skipping MMD calculation (No PyMC samples).")
+                    print("Skipping MMD calculation (no true posterior samples).")
 
                 if SAVE_MODEL_PARAMS:
                     save_model(result["model"], model_type, round_idx)
@@ -1979,17 +1940,8 @@ def main():
                 "combined_posteriors.png",
             )
 
-            # --- New: Plot all refinement comparisons ---
-            # Need to gather refinement data for all models
-            # We don't have a direct dict for this yet, so let's reconstruct it from file or previous loop logic
-            # Actually, `run_single_experiment` returns a dict with refined samples.
-            # But we didn't store the full result dicts in a way that's easy to access all at once here
-            # (we appended to all_results list for CSV, but didn't keep the return values in a keyed dict)
-            # Let's fix this by storing the return values in a dict during the loop
-
-            # (Note: we need to change the loop above slightly to store the full result objects if we want to do this cleanly)
-            # OR, we can just reload them from the saved .npy files, which is safer and decoupled.
-
+            # Plot all-model refinement comparisons; samples were collected in
+            # refinement_samples_for_plot during the model loop above.
             print(
                 f"Generating all-model refinement comparison plot for Round {round_idx}..."
             )
@@ -2000,7 +1952,7 @@ def main():
                     refinement_samples_for_plot,
                     theta_true,
                     combined_plot_dir,
-                    true_posterior_samples=pymc_samples,
+                    true_posterior_samples=true_samples,
                 )
             else:
                 print("No refinement data found for all-model comparison.")

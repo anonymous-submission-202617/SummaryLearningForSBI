@@ -124,8 +124,9 @@ Sub-experiments are run in the same way:
 python Gaussian/DataSizeDependence/run_experiment.py --config Gaussian/DataSizeDependence/config.json
 ```
 
-Before running the Gaussian main experiment, train the NLE and TD-NPSE
-checkpoints (only required once per dataset):
+The pretrained NLE and TD-NPSE checkpoints are included in the repository
+under `Gaussian/data/`, so the main experiment runs out of the box.  To
+retrain them from scratch instead (only required once per dataset):
 
 ```bash
 python Gaussian/run_nle_singleobs_train.py --n-train 50000 --epochs 500

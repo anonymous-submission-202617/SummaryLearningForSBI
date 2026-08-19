@@ -20,7 +20,7 @@ option to configure.
 python run_experiment.py --config config_smoke.json
 ```
 
-`config_smoke.json` uses a tiny dataset, a single round and a short NUTS chain
+`config_smoke.json` uses a tiny dataset, a single round and a short MCMC chain
 so the full pipeline (training, true-posterior sampling, refinement, metrics,
 plots) completes in a few minutes.
 
@@ -66,21 +66,28 @@ tmux new-session -d -s gauss_n100 \
 Attach with `tmux attach -t gauss_n25`, list with `tmux ls`, and kill with
 `tmux kill-session -t gauss_n25`.
 
-## True posterior sampling (NUTS)
+## True posterior sampling (MCMC)
 
-The reference posterior is sampled with **PyMC NUTS** on a folded
-parameterization (`true_posterior_config.method = "folded_nuts"`; `draws =
-250`, `tune = 800`, `chains = 4`, `target_accept = 0.9`), followed by an exact
-sign reflection of the symmetric marginals and a balanced stratified
-subsample of `4 * n_per_quad = 1000` samples.
+The reference posterior is sampled with the same random-walk Metropolis (RWM)
+sampler used by the refinement step (`run_gaussian_posterior_mcmc` in
+`utilities.py`).  `true_posterior_config` sets `n_draws = 1`, `n_tune_chain =
+1000`, `chains = 2000` and `proposal_scale_coeff = 0.55`, so the proposal
+scale is `0.55 / sqrt(n)`.  Each of the 2000 independent chains contributes
+one draw after 1000 burn-in steps, yielding 2000 reference samples per
+observation.
 
 ## Models and checkpoints
 
 - SMMD / MMD / BayesFlow / DNN-ABC / SNPE-C are trained inside the experiment
   (`models_config`).
-- NLE and TD-NPSE are observation-wise estimators; they load the pretrained
-  checkpoints shipped in `data/` (`nle_checkpoint.pt`, `td_npse_checkpoint.pt`)
-  and only perform posterior inference and metric evaluation.
+- NLE and TD-NPSE are observation-wise estimators; the main experiment loads
+  their pretrained checkpoints from `data/` (`nle_checkpoint.pt`,
+  `td_npse_checkpoint.pt`, included in this repository) and only performs
+  posterior inference and metric evaluation. We release the exact model
+  parameters used for the experiments in the paper, so the NLE and TD-NPSE
+  entries in the tables can be reproduced directly without retraining. The
+  checkpoints were generated once by the standalone training scripts
+  (`run_nle_singleobs_train.py` and `run_td_npse_singleobs_train_pairplots.py`).
 
 ## Outputs
 

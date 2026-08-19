@@ -21,7 +21,6 @@ dependencies = [
     "pyabc",
     "pot",
     "scikit-learn",
-    "pymc",
 ]
 
 [project.optional-dependencies]

@@ -184,7 +184,6 @@ def generate_dataset(task=None, n_sims=N, n_obs=None):
     return thetas, xs
 
 if __name__ == "__main__":
-    # Test
     task = GaussianTask()
     t, x = generate_dataset(task, n_sims=10)
     print("Theta shape:", t.shape)

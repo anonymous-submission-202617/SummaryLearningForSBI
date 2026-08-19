@@ -9,10 +9,6 @@ import os
 os.environ["KERAS_BACKEND"] = "torch"
 
 import torch
-# Patch is_available to False to force CPU if needed for Keras compatibility
-# (Matches stochastic_sir implementation)
-# if hasattr(torch.backends, "mps"):
-#    torch.backends.mps.is_available = lambda: False
 
 import numpy as np
 import keras

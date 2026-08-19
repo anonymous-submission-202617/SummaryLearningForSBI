@@ -32,7 +32,7 @@ from sbi_common.config_utils import cli_config_arg, resolve_config_path  # noqa:
 from data_generation import TRUE_PARAMS, GaussianTask, d, d_x, generate_dataset  # noqa: E402
 from models.sbi_wrappers import run_sbi_model, train_sbi_model, sample_from_trained_sbi  # noqa: E402
 from models.smmd import SMMD_Model, sliced_mmd_loss  # noqa: E402
-from utilities import compute_swd_metric, run_gaussian_posterior_mcmc, run_folded_nuts_true_posterior  # noqa: E402
+from utilities import compute_swd_metric, run_gaussian_posterior_mcmc  # noqa: E402
 
 
 def _device() -> torch.device:
@@ -228,8 +228,8 @@ def main():
     models_to_run: List[str] = [str(v).lower() for v in cfg.get("models_to_run", ["smmd", "npe"])]
     model_cfg_map = {model_name: _resolve_model_config(cfg, model_name) for model_name in models_to_run}
 
-    n_samples_posterior = int(cfg.get("n_samples_posterior", 1000))
-    metric_max_samples = int(cfg.get("metric_max_samples", 1000))
+    n_samples_posterior = int(cfg.get("n_samples_posterior", 2000))
+    metric_max_samples = int(cfg.get("metric_max_samples", 2000))
     swd_n_projections = int(cfg.get("swd_n_projections", 1000))
     swd_max_samples = int(cfg.get("swd_max_samples", metric_max_samples))
     true_post_cfg = dict(cfg.get("true_posterior_config", {}))
@@ -249,9 +249,6 @@ def main():
         true_post_cfg["n_draws"] = min(int(true_post_cfg.get("n_draws", 4)), 1)
         true_post_cfg["n_tune_chain"] = min(int(true_post_cfg.get("n_tune_chain", 800)), 50)
         true_post_cfg["chains"] = min(int(true_post_cfg.get("chains", 200)), 16)
-        true_post_cfg["draws"] = min(int(true_post_cfg.get("draws", 250)), 20)
-        true_post_cfg["tune"] = min(int(true_post_cfg.get("tune", 200)), 10)
-        true_post_cfg["chains"] = min(int(true_post_cfg.get("chains", 4)), 2)
         for model_name in models_to_run:
             mc = dict(model_cfg_map.get(model_name, {}))
             mc["epochs"] = min(int(mc.get("epochs", 2)), 2)
@@ -408,43 +405,24 @@ def main():
                 x_obs_2d = _stereo_inverse(x_obs_3d)
 
                 # Compute true posterior for this observation
-                method = str(true_post_cfg.get("method", "mcmc")).lower()
-                proposal_scale = float("nan")  # only used by the RWM fallback
+                coeff = float(true_post_cfg.get("proposal_scale_coeff", 0.6))
+                proposal_scale = float(coeff / np.sqrt(float(task.n)))
+                print(
+                    f"Sampling true posterior (RWM): chains={int(true_post_cfg.get('chains', 200))} "
+                    f"tune={int(true_post_cfg.get('n_tune_chain', 800))} "
+                    f"draws={int(true_post_cfg.get('n_draws', 4))} "
+                    f"proposal_scale={proposal_scale:.6f}",
+                    flush=True,
+                )
                 t_true0 = time.time()
-                if method == "folded_nuts":
-                    true_samples = run_folded_nuts_true_posterior(
-                        x_obs_2d,
-                        draws=int(true_post_cfg.get("draws", 250)),
-                        tune=int(true_post_cfg.get("tune", 200)),
-                        chains=int(true_post_cfg.get("chains", 4)),
-                        target_accept=float(true_post_cfg.get("target_accept", 0.9)),
-                        random_seed=int(true_post_cfg.get(
-                            "random_seed", int(seed) + int(n_obs) * 100000 + int(n_train) * 100 + int(try_idx) * 10)),
-                        n_per_quad=int(true_post_cfg.get("n_per_quad", 250)),
-                    )
-                    print(
-                        f"Folded NUTS true posterior: {true_samples.shape} "
-                        f"({int(true_samples.shape[0]) // 4} per quadrant)",
-                        flush=True,
-                    )
-                else:
-                    coeff = float(true_post_cfg.get("proposal_scale_coeff", 0.6))
-                    proposal_scale = float(coeff / np.sqrt(float(task.n)))
-                    print(
-                        f"Sampling true posterior (RWM): chains={int(true_post_cfg.get('chains', 200))} "
-                        f"tune={int(true_post_cfg.get('n_tune_chain', 800))} "
-                        f"draws={int(true_post_cfg.get('n_draws', 4))} "
-                        f"proposal_scale={proposal_scale:.6f}",
-                        flush=True,
-                    )
-                    true_samples = run_gaussian_posterior_mcmc(
-                        x_obs_2d,
-                        task,
-                        n_draws=int(true_post_cfg.get("n_draws", 4)),
-                        n_tune_chain=int(true_post_cfg.get("n_tune_chain", 800)),
-                        chains=int(true_post_cfg.get("chains", 200)),
-                        proposal_scale=float(proposal_scale),
-                    )
+                true_samples = run_gaussian_posterior_mcmc(
+                    x_obs_2d,
+                    task,
+                    n_draws=int(true_post_cfg.get("n_draws", 4)),
+                    n_tune_chain=int(true_post_cfg.get("n_tune_chain", 800)),
+                    chains=int(true_post_cfg.get("chains", 200)),
+                    proposal_scale=float(proposal_scale),
+                )
                 true_time_sec = float(time.time() - t_true0)
                 for model_name in models_to_run:
                     model_conf = dict(model_cfg_map.get(model_name, {}))

@@ -1740,7 +1740,7 @@ def run_single_experiment(model_type, task, train_loader, theta_true, x_obs, rou
     elif model_type == "dnnabc":
         model = DNNABC_Model(d=d, d_x=d_x)
         loss_history = train_dnnabc(model, train_loader, epochs, DEVICE)
-        training_time = 0 # Tracked elsewhere or ignored for now
+        training_time = 0.0  # DNN-ABC training time is not collected here.
     elif model_type in ["snpe_a", "snpe_b", "npe", "snpe", "snpe_c"]:
         # SBI Models train and sample in one go (for this implementation)
         pass
@@ -1972,10 +1972,6 @@ def run_single_experiment(model_type, task, train_loader, theta_true, x_obs, rou
             if theta_new.ndim == 3 and theta_new.shape[1] == 1:
                 theta_new = theta_new.squeeze(1)
             
-            # Print shapes for debug
-            print(f"   Shape Check: theta_old={theta_old.shape}, theta_new={theta_new.shape}")
-            print(f"   Shape Check: x_old={x_old.shape}, x_new={x_new.shape}")
-            
             # If dataset size differs from N_new, adjust. 
             # Usually N_new = N (dataset size).
             if len(theta_old) != N_new:
@@ -1984,9 +1980,8 @@ def run_single_experiment(model_type, task, train_loader, theta_true, x_obs, rou
                 theta_old = theta_old[indices]
                 x_old = x_old[indices]
 
-            # Fit KDE on q_train samples (theta_new) for weight calculation later
-            # Wait, we need q_train(theta) density.
-            # We approximate q_train(theta) using KDE on theta_new (samples from q_train).
+            # Fit a KDE on q_train samples (theta_new) for the later importance weights,
+            # approximating the proposal density q_train(theta).
             print("   Fitting boundary-corrected KDE on q_train samples...")
             theta_kde = theta_new
             if kde_n_samples > theta_kde.shape[0]:

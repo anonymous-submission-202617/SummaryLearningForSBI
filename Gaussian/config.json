@@ -7,26 +7,25 @@
   "batch_size": 256,
   "learning_rate": 0.001,
   "seed": 0,
-  "n_samples_posterior": 1000,
+  "n_samples_posterior": 2000,
   "swd_n_projections": 1000,
-  "swd_max_samples": 1000,
+  "swd_max_samples": 2000,
   "num_rounds": 10,
   "true_posterior_config": {
-    "method": "folded_nuts",
-    "draws": 250,
-    "tune": 800,
-    "chains": 4,
-    "target_accept": 0.9,
-    "n_per_quad": 250
+    "method": "mcmc",
+    "n_draws": 1,
+    "n_tune_chain": 1000,
+    "chains": 2000,
+    "proposal_scale_coeff": 0.55
   },
   "refine_config": {
-    "n_chains": 1000,
+    "n_chains": 2000,
     "burn_in": 119,
     "thin": 1,
     "nsims": 4,
-    "proposal_std": 0.5,
+    "proposal_std": 0.2,
     "epsilon": null,
-    "quantile_level": 0.002,
+    "quantile_level": 0.01,
     "bandwidth_n_samples": 20000
   },
   "models_to_run": [

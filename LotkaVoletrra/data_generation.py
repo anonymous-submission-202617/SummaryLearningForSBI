@@ -221,8 +221,7 @@ class LVTask:
             if np.any(zero_rate_mask):
                 # For zero rate trajectories, they stay constant forever
                 # Just mark them as done for simulation logic, but we need to fill observations later
-                # Actually, simpler to set total_rate to small epsilon to avoid div/0, 
-                # or better: set dt to infinity (large value)
+                # Simpler: set total_rate to a small epsilon to avoid division by zero.
                 total_rate[zero_rate_mask] = 1e-10 # avoid div/0
                 # We will handle the "jump to end" logic by dt
             
@@ -290,7 +289,6 @@ class LVTask:
                 # If a sim didn't cross, 'crossed' is False, so we don't increment.
                 # But we need to remove them from 'still_recording' to avoid infinite loop if they never cross again in this step.
                 
-                # Actually, logic:
                 # If t_next > next_time, we record and increment.
                 # If t_next <= next_time, we are done recording for this step.
                 
