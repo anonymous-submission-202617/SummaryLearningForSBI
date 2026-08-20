@@ -1,3 +1,6 @@
+"""Shared utilities for the SIR task: posterior-sampling helpers,
+ABC-MCMC refinement, and kernel-bandwidth estimation."""
+
 import torch
 import numpy as np
 import time

@@ -1,10 +1,15 @@
-"""Data-size dependence experiment for the Gaussian task.
-
-Scans training set size (``train_sizes``) and observations per dataset
-(``n_obs_list``) and trains SMMD vs NPE for each combination, writing
-aggregated SWD metric tables and the transposed SWD figure to
-``results_dir``.
-"""
+###############################################################################
+# Gaussian data-size dependence study (SMMD vs NPE)
+#
+# Trains SMMD and NPE across training budgets N = 20,000 / 30,000 / 40,000
+# and observation counts n = 10 / 75 / 150 / 225 / 300, evaluated on 25
+# test datasets.
+#
+# Reproduces Figure 2 of the manuscript: sqrt(n) * sW between estimated and
+# ground-truth posteriors as a function of n under different training sizes.
+#
+# Outputs: results_datasize_dependence/ (see README.md).
+###############################################################################
 
 import json
 import os
@@ -550,6 +555,7 @@ def main():
     df_raw = pd.DataFrame(raw_rows)
     df_agg = pd.DataFrame(agg_rows)
     df_raw.to_csv(raw_csv_path, index=False)
+    # Figure 2: aggregated sqrt(n)*sW per (training budget, observation count).
     df_agg.to_csv(agg_csv_path, index=False)
 
     # --- Font size configuration (paper-readable) ---
@@ -608,6 +614,7 @@ def main():
 
     # --- Generate figures ---
     # Transposed multi-panel: N_train as columns, n on x-axis (linear).
+    # Figure 2: multi-panel sW vs n figure, one panel per training budget.
     _plot_metric_transposed(metric="swd", out_name="datasize_dependence_swd_transposed.png")
 
 

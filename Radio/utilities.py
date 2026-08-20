@@ -1,3 +1,6 @@
+"""Shared utilities for the Radio task: ABC-MCMC refinement and
+kernel-bandwidth estimation."""
+
 import time
 from typing import Callable
 
@@ -429,4 +432,3 @@ def refine_posterior_smmd(
         int(thin),
         float(proposal_std),
     )
-

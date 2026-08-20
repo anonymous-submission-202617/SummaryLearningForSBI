@@ -1,3 +1,6 @@
+"""Thin wrapper implementing the NPE-RS baseline for the Radio task on top
+of sbi's direct posterior estimator."""
+
 import numpy as np
 import torch
 import torch.nn as nn

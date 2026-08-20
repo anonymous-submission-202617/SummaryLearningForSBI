@@ -1,3 +1,6 @@
+"""Thin wrapper around the ``sbi`` package for the SNPE-C estimator of the
+Lotka-Volterra task, including the hand-crafted summary statistics."""
+
 import torch
 import numpy as np
 try:

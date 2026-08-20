@@ -6,6 +6,21 @@ proposed methods (SMMD, MMD) with BayesFlow, DNN-ABC, SNPE-C, NLE and
 TD-NPSE at observation counts `n = 25, 50, 100`, each with 10 replications and
 local refinement.
 
+## Paper result reproduced
+
+This experiment reproduces **Table 1 ("Results for toy examples.")** in the
+subsection *Toy Example With Multimodal Posterior* of the manuscript's
+"Numerical Experiments" section. For each observation count `n`, the table
+reports the MMD and the sliced Wasserstein distance (sW, rescaled as
+\(\sqrt{n}\times\)sW) between each estimated posterior and the ground-truth
+posterior, averaged over the 10 replications. The code produces the
+amortized and refined columns for SMMD, MMD and BayesFlow, and the
+corresponding entries for the DNN-ABC, SNPE-C, NLE and TD-NPSE baselines.
+
+The sub-experiment [`DataSizeDependence/`](DataSizeDependence/README.md)
+reproduces the scaling figure (sW vs observation count under different
+training budgets) of the same manuscript subsection.
+
 The default configuration (`config.json`) runs `n = 25` with the exact
 hyper-parameters used for the results in the paper.  The same hyper-parameters
 are used for `n = 50, 100`; only the two fields listed below change.
@@ -76,6 +91,9 @@ observation.
 
 - SMMD / MMD / BayesFlow / DNN-ABC / SNPE-C are trained inside the experiment
   (`models_config`).
+- SNPE-C / NPE are trained and sampled through `models/sbi_wrappers.py`, a
+  thin wrapper around the `sbi` package; the `DataSizeDependence/`
+  sub-experiment reuses the same wrapper for its NPE runs.
 - NLE and TD-NPSE are observation-wise estimators; the main experiment loads
   their pretrained checkpoints from `data/` (`nle_checkpoint.pt`,
   `td_npse_checkpoint.pt`, included in this repository) and only performs
@@ -83,9 +101,63 @@ observation.
   parameters used for the experiments in the paper, so the NLE and TD-NPSE
   entries in the tables can be reproduced directly without retraining. The
   checkpoints were generated once by the standalone training scripts
-  (`run_nle_singleobs_train.py` and `run_td_npse_singleobs_train_pairplots.py`).
+  (`run_nle_singleobs_train.py` and `run_td_npse_singleobs_train_pairplots.py`):
+  - `run_nle_singleobs_train.py` — trains the NLE model and exports
+    `data/nle_checkpoint.pt`;
+  - `run_td_npse_singleobs_train_pairplots.py` — trains the TD-NPSE model
+    and, as the `pairplots` suffix indicates, additionally evaluates the
+    fitted estimator: for each observation count it draws the MCMC true
+    posterior at the fixed true parameter, samples the TD-NPSE posterior,
+    and writes pairplot / marginal comparison figures and MMD / sW metric
+    tables to `results/td_npse_singleobs_train_pairplots/<exp_name>/`, where
+    `<exp_name>` encodes the training configuration (e.g.
+    `ntrain50000_trainobs1_e5000_seed0`). The TD-NPSE checkpoint to copy to
+    `data/` is
+    `results/td_npse_singleobs_train_pairplots/<exp_name>/artifacts/td_npse_checkpoint.pt`.
 
 ## Outputs
 
-Results are written to `results_25/` (or `results_50/`, `results_100/`):
-`experiment_results.csv`, per-round posterior plots, and posterior samples.
+Each run writes to `results_<n>/` (`results_25/`, `results_50/` or
+`results_100/`):
+
+- `experiment_results.csv` — per-round, per-model MMD and
+  \(\sqrt{n}\times\)sW values (amortized and refined) behind Table 1;
+- `final_summary.csv` — per-model summary statistics (mean / median over
+  the 10 replications);
+- `posterior_samples/true_reference/round_<r>/samples.npy` — the MCMC
+  ground-truth posterior samples for each replication;
+- `plots/round_<r>/true_posterior/posterior.png` — the ground-truth
+  posterior; `plots/round_<r>/<model>/` — per-model `amortized_posterior.png`,
+  `refined_posterior.png` (SMMD / MMD / BayesFlow) and
+  `<model>_refinement_comparison.png`;
+- `plots/round_<r>/combined_posteriors.png` and
+  `plots/round_<r>/all_models_refinement_comparison.png` — all-model
+  marginal-posterior figures;
+- `plots/round_<r>/loss/` — training loss curves (`*.png` with matching
+  `*.csv` data);
+- `terminal.log` — full run log.
+
+## Execution order
+
+1. *(Optional)* Train the observation-wise baselines once, if you do not want
+   to use the released checkpoints in `data/`:
+   `run_nle_singleobs_train.py`, then
+   `run_td_npse_singleobs_train_pairplots.py` (copy the TD-NPSE checkpoint to
+   `data/td_npse_checkpoint.pt` as described above).
+2. Run the main experiment for each observation count:
+   `python run_experiment.py --config config.json` with
+   `n_observation = 25, 50, 100` (three independent runs, see "Running the
+   three sample sizes in parallel").
+3. *(Optional, independent)* Run the scaling study:
+   `cd DataSizeDependence && python run_experiment.py --config config.json`.
+
+## Implementation notes
+
+Every run fixes its random seed (`seed` in `config.json`) and, given the
+seed, data generation and training are deterministic. Nevertheless, the
+performance of an amortized estimator can still vary somewhat when it is
+trained on a different machine (GPU, CUDA version, or framework build).
+The ABC-MCMC refinement step may therefore need mild re-tuning so that the
+chains converge to the correct summary-conditioned posterior; the main knob
+is the proposal step-size coefficient (`refine_config.proposal_std`),
+with values in the range **0.2–0.6** as a good starting point.

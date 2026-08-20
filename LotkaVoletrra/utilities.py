@@ -1,3 +1,6 @@
+"""Shared utilities for the Lotka-Volterra task: ABC-MCMC refinement,
+KDE-based density helpers, and kernel-bandwidth estimation."""
+
 import torch
 import numpy as np
 import time

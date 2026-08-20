@@ -1,3 +1,6 @@
+"""Scaling transforms between raw log-theta and the [0, 1] box used by the
+SNPE-C wrapper."""
+
 import numpy as np
 import torch
 

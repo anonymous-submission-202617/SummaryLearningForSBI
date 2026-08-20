@@ -1,3 +1,5 @@
+"""Simulator, prior, and summary statistics for the SIR task."""
+
 import os
 import json
 import numpy as np

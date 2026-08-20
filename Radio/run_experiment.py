@@ -1,3 +1,16 @@
+###############################################################################
+# Radio (Turin channel) real-data application
+#
+# Infers 4 channel parameters from 801-bin impulse-response observations of
+# a misspecified simulator, using SMMD / MMD / BayesFlow / DNN-ABC / NPE-RS
+# with local refinement, over 20 replications on the observed data.
+#
+# Reproduces the predictive-performance figure and the RMSE metric reported
+# at the end of the "Real Data Application" subsection.
+#
+# Outputs: results/ (see README.md).
+###############################################################################
+
 from __future__ import annotations
 
 import csv
@@ -695,6 +708,7 @@ def main():
 
         if compare_series:
             _log("Compare plot series: " + ", ".join([str(s.get("label")) for s in compare_series]))
+            # Predictive-performance figure: posterior-predictive mean +/- std vs observed series.
             plot_predictive_mean_std(compare_series, x_obs_mean, result_base / "compare_predictive_mean_std.png")
             if compare_series_refined:
                 by_label = {str(s.get("label")): s for s in compare_series}
@@ -712,6 +726,8 @@ def main():
             rmse_rows_all.extend(rmse_rows)
 
     if rmse_rows_all:
+        # RMSE metric reported in the manuscript: per-round predictive RMSE,
+        # averaged over the 20 rounds.
         out_all_rounds = results_root / "rmse_all_rounds.csv"
         with open(out_all_rounds, "w", encoding="utf-8", newline="") as f:
             fieldnames = ["round", "model", "rmse_mean_curve", "n_pred"]

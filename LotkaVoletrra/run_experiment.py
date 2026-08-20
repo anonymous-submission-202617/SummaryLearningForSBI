@@ -1,8 +1,16 @@
-
-"""
-Run Experiment for Lotka-Volterra Task with SMMD/MMD/BayesFlow/DNNABC.
-Migrated from Gaussian Task.
-"""
+###############################################################################
+# Lotka-Volterra model with vague prior
+#
+# Trains SMMD / MMD / BayesFlow (Refine+: sequential training + ABC-MCMC
+# refinement) and the DNN-ABC / SNPE-C baselines over 100 replications at a
+# fixed true parameter, under a matched simulation budget.
+#
+# Reproduces Table 3 ("Results for Lotka-Volterra model.") and the Refine+
+# figure showing posterior densities across the amortized, sequential and
+# refinement stages.
+#
+# Outputs: results/ (see README.md).
+###############################################################################
 
 import os
 import sys
@@ -103,7 +111,7 @@ except (FileNotFoundError, TypeError):
             "n_sims": 1
         },
         "plot_config": {
-            "save_refinement_comparison_plots": True
+            "save_refinement_comparison_plots": False
         }
     }
 
@@ -167,7 +175,7 @@ MODELS_TO_RUN = CONFIG.get("models_to_run", ["smmd"])
 MODELS_CONFIG = CONFIG.get("models_config", {})
 REFINEMENT_CONFIG = CONFIG.get("refinement_config", {})
 PLOT_CONFIG = CONFIG.get("plot_config", {})
-SAVE_REFINEMENT_COMPARISON_PLOTS = PLOT_CONFIG.get("save_refinement_comparison_plots", True)
+SAVE_REFINEMENT_COMPARISON_PLOTS = PLOT_CONFIG.get("save_refinement_comparison_plots", False)
 OBSERVATION_PREPROCESSING = CONFIG.get("observation_preprocessing", {})
 OBS_TRANSFORM = str(OBSERVATION_PREPROCESSING.get("transform", "none")).lower()
 
@@ -663,78 +671,6 @@ def plot_combined_posteriors(all_model_samples, theta_true, output_dir, filename
     plt.savefig(os.path.join(output_dir, filename), dpi=350, bbox_inches="tight")
     plt.close()
 
-
-def plot_calibration_error_curves_from_table(
-    curve_table_csv_path,
-    output_path,
-    smooth_window=5,
-):
-    curve_table_csv_path = str(curve_table_csv_path)
-    df = pd.read_csv(curve_table_csv_path)
-    if df.empty:
-        return
-
-    required_cols = {"model", "stage", "confidence", "calibration_error", "param_idx"}
-    if not required_cols.issubset(set(df.columns)):
-        missing = sorted(required_cols - set(df.columns))
-        raise ValueError(f"Missing required columns in calibration curve table: {missing}")
-
-    df["model"] = df["model"].astype(str)
-    df["stage"] = df["stage"].astype(str)
-    df["confidence"] = df["confidence"].astype(float)
-    df["calibration_error"] = df["calibration_error"].astype(float)
-    df["param_idx"] = df["param_idx"].astype(int)
-
-    group_cols = ["model", "stage", "confidence"]
-    agg = df.groupby(group_cols, as_index=False)["calibration_error"].mean()
-
-    if smooth_window is not None and int(smooth_window) > 1:
-        smooth_window = int(smooth_window)
-        agg = agg.sort_values(["model", "stage", "confidence"], kind="mergesort")
-        agg["calibration_error"] = (
-            agg.groupby(["model", "stage"])["calibration_error"]
-            .transform(lambda s: s.rolling(smooth_window, center=True, min_periods=1).mean())
-        )
-
-    sns.set_theme(style="whitegrid", font_scale=1.6)
-    fig, ax = plt.subplots(figsize=(12, 7))
-
-    colors = {
-        "smmd": "#DB1218",
-        "mmd": "#1083CA",
-        "bayesflow": "#49C926",
-        "dnnabc": "#8315dd",
-        "npe": "#f19327",
-        "snpe": "#f19327",
-        "snpe_a": "#f19327",
-        "snpe_b": "#f19327",
-        "snpe_c": "#f19327",
-    }
-    stage_linestyle = {"initial": "-", "refineplus": "--"}
-
-    for (model, stage), g in agg.groupby(["model", "stage"]):
-        key = str(model).lower()
-        color = colors.get(key, None)
-        linestyle = stage_linestyle.get(str(stage).lower(), "-")
-        label = f"{str(model).upper()} ({stage})"
-        g = g.sort_values("confidence")
-        ax.plot(
-            g["confidence"].to_numpy(),
-            g["calibration_error"].to_numpy(),
-            linewidth=3.0,
-            linestyle=linestyle,
-            label=label,
-            color=color,
-        )
-
-    ax.axhline(0.0, color="#555555", linewidth=2.5, alpha=0.85)
-    ax.set_xlabel("Confidence q", fontsize=22)
-    ax.set_ylabel(r"Calibration error $q_{inliers}-q$", fontsize=22)
-    ax.tick_params(axis="both", which="major", labelsize=18)
-    ax.legend(loc="upper left", frameon=True, fontsize=18)
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=220, bbox_inches="tight")
-    plt.close(fig)
 
 def plot_combined_posteriors_theta(all_model_samples, theta_true, output_dir, filename="combined_posteriors_theta.png", sample_spaces=None):
     os.makedirs(output_dir, exist_ok=True)
@@ -2218,7 +2154,6 @@ def main():
 
     def _compute_and_save_calibration():
         summary_rows = []
-        curve_rows = []
         for model_name in MODELS:
             stages = ["initial"]
             if model_name in ["smmd", "mmd", "bayesflow"]:
@@ -2286,38 +2221,9 @@ def main():
                     row[f"median_abs_calibration_error_param{j+1}"] = float(per_dim[j])
                 summary_rows.append(row)
 
-                confidences = np.asarray(calib["confidences"], dtype=np.float32)
-                inlier_fractions = np.asarray(calib["inlier_fractions"], dtype=np.float32)
-                calib_err = np.asarray(calib["calibration_error"], dtype=np.float32)
-                median_interval_lengths = np.asarray(calib["median_interval_lengths"], dtype=np.float32)
-                n_steps, d_param = calib_err.shape
-                for j in range(d_param):
-                    for i in range(n_steps):
-                        curve_rows.append(
-                            {
-                                "model": model_name,
-                                "stage": stage,
-                                "n_rounds": int(calib["n_rounds"]),
-                                "param_idx": j,
-                                "confidence": float(confidences[i]),
-                                "inlier_fraction": float(inlier_fractions[i, j]),
-                                "calibration_error": float(calib_err[i, j]),
-                                "abs_calibration_error": float(abs(calib_err[i, j])),
-                                "median_interval_length": float(median_interval_lengths[i, j]),
-                            }
-                        )
-
         if summary_rows:
             pd.DataFrame(summary_rows).to_csv(
                 f"{RESULTS_BASE}/calibration/calibration_summary.csv", index=False
-            )
-        if curve_rows:
-            pd.DataFrame(curve_rows).to_csv(
-                f"{RESULTS_BASE}/calibration/calibration_curve_table.csv", index=False
-            )
-            plot_calibration_error_curves_from_table(
-                f"{RESULTS_BASE}/calibration/calibration_curve_table.csv",
-                f"{RESULTS_BASE}/calibration/calibration_error_curves.png",
             )
     
     for round_idx in range(1, NUM_ROUNDS + 1):
@@ -2455,6 +2361,8 @@ def main():
                             }
                             
                             if SAVE_REFINEMENT_COMPARISON_PLOTS:
+                                # Refine+ figure: posterior densities across the
+                                # amortized / sequential / refinement stages.
                                 plot_dir = f"{RESULTS_BASE}/models/{model_name}/round_{round_idx}/comparison"
                                 plot_refinement_comparison(
                                     plot_samples,
@@ -2623,6 +2531,7 @@ def aggregate_and_save_results(model_results_table):
             continue
             
         df_model = pd.DataFrame(rows)
+        # Table 3: per-replication and aggregated metrics.
         cols = ["round", "status", "stage", "bias_l2", "hdi_length", "coverage", 
                 "time_initial", "time_refined_plus", "time_mcmc"]
         other_cols = [c for c in df_model.columns if c not in cols and not c.startswith("seconds_")]

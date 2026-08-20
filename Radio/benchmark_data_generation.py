@@ -1,3 +1,9 @@
+"""Sanity-check script for the Radio (Turin channel) simulator.
+
+Samples prior parameters, simulates a batch of benchmark realizations,
+prints throughput and shape diagnostics, and plots the simulated series
+against the observed data."""
+
 import argparse
 import time
 from pathlib import Path

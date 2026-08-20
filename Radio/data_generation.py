@@ -1,3 +1,6 @@
+"""Simulator and task class for the Radio (Turin channel) real-data
+application, plus configuration loading."""
+
 import os
 import json
 from dataclasses import dataclass

@@ -1,3 +1,7 @@
+"""Thin wrapper around the ``sbi`` package for training and sampling the
+SNPE-C / NPE estimators, together with the hand-crafted summary statistics
+they consume."""
+
 import torch
 import numpy as np
 try:

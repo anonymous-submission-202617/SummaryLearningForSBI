@@ -1,6 +1,16 @@
-"""
-Run Experiment for Gaussian Task with SMMD/MMD/BayesFlow and Refinement.
-"""
+###############################################################################
+# Gaussian toy example with multimodal posterior
+#
+# Trains the proposed summary-learning estimators (SMMD, MMD) and the
+# baselines (BayesFlow, DNN-ABC, SNPE-C) at n = 25, 50, 100, runs local
+# refinement, and evaluates NLE / TD-NPSE from the released checkpoints.
+#
+# Reproduces Table 1 ("Results for toy examples."): MMD and sqrt(n) * sW
+# between each estimated posterior and the ground-truth posterior, averaged
+# over 10 replications.
+#
+# Outputs: results_<n>/ (see README.md).
+###############################################################################
 
 import os
 import sys
@@ -1927,6 +1937,7 @@ def main():
                     model_results_table[model_type] = []
                 model_results_table[model_type].append(record)
 
+                # Table 1: per-round MMD / sqrt(n)*sW values (amortized and refined).
                 pd.DataFrame(all_results).to_csv(
                     f"{RESULTS_BASE}/experiment_results.csv", index=False
                 )
@@ -2028,6 +2039,7 @@ def main():
             if summary_rows:
                 df_summary = pd.DataFrame(summary_rows)
                 summary_path = f"{RESULTS_BASE}/final_summary.csv"
+                # Table 1: per-model summary statistics averaged over replications.
                 df_summary.to_csv(summary_path, index=False)
                 print(f"Saved final summary to {summary_path}")
             else:

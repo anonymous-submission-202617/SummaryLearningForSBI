@@ -1,3 +1,6 @@
+"""Simulator and task class for the Lotka-Volterra model (Gillespie
+algorithm), together with trajectory-plotting helpers."""
+
 import numpy as np
 import matplotlib.pyplot as plt
 import os

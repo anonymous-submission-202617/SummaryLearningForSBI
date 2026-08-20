@@ -1,16 +1,17 @@
-"""
-Expected coverage / calibration experiment for the SIR benchmark.
-
-This script trains amortized models once, then evaluates calibration by sampling
-independent pairs (theta_i, x_i) from the joint distribution p(theta, x):
-
-    theta_i ~ p(theta)
-    x_i ~ p(x | theta_i)
-
-For each pair, it draws posterior samples q(theta | x_i), checks whether the
-true theta_i falls inside equal-tailed alpha-credible intervals, and then
-aggregates the empirical coverage curve and calibration error curve.
-"""
+###############################################################################
+# SIR model with small training budget
+#
+# Trains SMMD / MMD / BayesFlow / DNN-ABC once, then evaluates calibration
+# under a simulation-based calibration protocol: for each replication, draw
+# theta_i ~ p(theta) and x_i ~ p(x | theta_i), and record whether theta_i
+# falls in equal-tailed credible intervals of the fitted posterior.
+#
+# Reproduces Table 2 ("Results for SIR model."), the calibration-curves
+# figure, and the illustration of approximate posteriors before / after
+# refinement.
+#
+# Outputs: results/calibration_expected_coverage/ (see README.md).
+###############################################################################
 
 import argparse
 import glob
@@ -521,6 +522,7 @@ def plot_calibration_error_curves(results_by_series, param_names, output_dir):
         frameon=True,
     )
     fig.tight_layout()
+    # Calibration-curves figure: empirical minus nominal coverage vs nominal level.
     fig.savefig(os.path.join(output_dir, "calibration_error_curves.png"), dpi=240, bbox_inches="tight")
     plt.close(fig)
 
@@ -811,6 +813,7 @@ def update_summary_and_curves(output_dir, n_steps, training_times, round_idx, re
         ))
 
     if summary_rows:
+        # Table 2: aggregated calibration metrics over the replications.
         summary = pd.DataFrame(summary_rows)
         summary.to_csv(os.path.join(output_dir, "calibration_summary.csv"), index=False)
 
@@ -837,6 +840,7 @@ def update_summary_and_curves(output_dir, n_steps, training_times, round_idx, re
                         "median_interval_length": float(res["median_interval_lengths"][step_idx, param_idx]),
                     }
                 )
+    # Calibration-curves figure: coverage-curve data (empirical vs nominal).
     pd.DataFrame(coverage_rows).to_csv(os.path.join(output_dir, "calibration_curve_data.csv"), index=False)
 
     if results_by_series:

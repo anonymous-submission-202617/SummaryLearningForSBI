@@ -1,3 +1,31 @@
+"""Train the TD-NPSE model for the Gaussian main experiment on single-observation data.
+
+Trains a diffusion-based observation-wise posterior estimator (TD-NPSE, as
+configured by the command-line arguments below) on single-observation
+training pairs (one observation per theta draw) sampled from a uniform prior
+over [-3, 3]^5, then saves the fitted estimator to a checkpoint file.
+``run_experiment.py`` loads this checkpoint in ``eval_mode="reload_checkpoint"``
+and only performs posterior inference during the main experiment rounds.
+
+The ``pairplots`` suffix reflects the diagnostic step that follows training:
+for each observation count in ``--eval-n-obs-list`` (default 1, 15, 25, 50,
+100), the script draws the true posterior by MCMC at the main experiment's
+fixed true parameter, samples the TD-NPSE posterior, and saves pairplot /
+marginal / theta_3-theta_4 comparison figures together with MMD and sW
+metric tables to the output directory.
+
+The checkpoint stores the full constructor configuration together with the
+model state dict, and a reload check is saved to ``reload_check.json``. The
+checkpoint is written under
+``results/td_npse_singleobs_train_pairplots/<exp_name>/artifacts/td_npse_checkpoint.pt``,
+where ``<exp_name>`` encodes the training configuration (e.g.
+``ntrain50000_trainobs1_e5000_seed0``); copy it to ``data/td_npse_checkpoint.pt``
+to use it in the main experiment.
+
+Example:
+    python run_td_npse_singleobs_train_pairplots.py --n-train 50000 --epochs 5000
+"""
+
 import argparse
 import json
 import os

@@ -80,7 +80,7 @@
     "bandwidth_quantile_level": 0.01
   },
   "plot_config": {
-    "save_refinement_comparison_plots": true
+    "save_refinement_comparison_plots": false
   },
   "seed": 0
 }

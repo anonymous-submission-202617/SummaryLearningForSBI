@@ -1,3 +1,6 @@
+"""BayesFlow amortized estimator (summary network + continuous
+approximator) for the SIR task."""
+
 import os
 
 os.environ["KERAS_BACKEND"] = "torch"

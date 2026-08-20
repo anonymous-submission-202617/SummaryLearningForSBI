@@ -1,3 +1,7 @@
+"""Shared utilities for the Gaussian task: ABC-MCMC refinement,
+true-posterior MCMC sampling, kernel-bandwidth estimation, and metric
+evaluation."""
+
 import torch
 import numpy as np
 import time

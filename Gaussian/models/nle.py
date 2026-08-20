@@ -1,3 +1,6 @@
+"""Neural likelihood estimator (NLE) for the Gaussian task, built on
+sbi's ``NLE_A`` with a MAF-based likelihood network."""
+
 import math
 import time
 from dataclasses import dataclass

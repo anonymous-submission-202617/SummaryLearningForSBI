@@ -1,3 +1,6 @@
+"""Time-Diffusion Neural Posterior Score Estimation (TD-NPSE) model for the
+Gaussian task."""
+
 import copy
 import math
 import warnings
