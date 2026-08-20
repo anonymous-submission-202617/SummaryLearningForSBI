@@ -9,10 +9,16 @@ uninformative prior.
 ## Data
 
 The real measurements used for inference (`data/turin_obs.npy`, `n = 100`
-impulse-response realizations over `d_X = 801` frequency bins) come from
-the radio-propagation benchmark of Huang et al. (2023), publicly available
-at <https://github.com/huangdaolang/robust-sbi>. They are used as the fixed
+impulse-response realizations over `d_X = 801` frequency bins) originate
+from the measurement campaign of Gustafson et al. (2016). We copied the
+dataset from the public benchmark repository of Huang et al. (2023)
+(<https://github.com/huangdaolang/robust-sbi>), which uses the same
+measurements in its radio-propagation application. It is used as the fixed
 observed dataset throughout the experiment.
+
+Gustafson, C., Bolin, D., & Tufvesson, F. (2016). Modeling the polarimetric
+mm-wave propagation channel using censored measurements. In *2016 IEEE
+Global Communications Conference (GLOBECOM)*, pp. 1–6.
 
 Huang, D., Bharti, A., Souza, A., Acerbi, L., & Kaski, S. (2023). Learning
 Robust Statistics for Simulation-based Inference under Model
