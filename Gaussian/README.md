@@ -2,7 +2,7 @@
 
 Five-parameter bivariate Gaussian model with a nonlinear (stereographic)
 transformation; the posterior is multimodal.  The experiment compares the
-proposed methods (SMMD, MMD) with BayesFlow, DNN-ABC, SNPE-C (NPE), NLE and
+proposed methods (SMMD, MMD) with BayesFlow, DNN-ABC, SNPE-C, NLE and
 TD-NPSE at observation counts `n = 25, 50, 100`, each with 10 replications and
 local refinement.
 
@@ -26,17 +26,13 @@ plots) completes in a few minutes.
 
 ## Reproducing the paper runs
 
-Each `n` uses the same `config.json` with two changes:
+Each `n` uses the same `config.json` with one change:
 
-| `n` | `n_observation` / `n_observation_list` | `refine_config.nsims` |
-| --- | --- | --- |
-| 25 | `25` / `[25]` | `4` |
-| 50 | `50` / `[50]` | `2` |
-| 100 | `100` / `[100]` | `1` |
-
-The refinement likelihood is estimated from `nsims` simulator calls per MCMC
-proposal; we use `nsims = 100 / n` (i.e. 4, 2, 1 for `n = 25, 50, 100`), which
-is already reflected in the table above.
+| `n` | `n_observation` / `n_observation_list` |
+| --- | --- |
+| 25 | `25` / `[25]` |
+| 50 | `50` / `[50]` |
+| 100 | `100` / `[100]` |
 
 All runs use `seed = 0`; within a run the ten replications use round seeds
 `seed + (round - 1)`, i.e. `0..9`.  Since `n = 25, 50, 100` are launched as
@@ -53,12 +49,12 @@ tmux new-session -d -s gauss_n25 \
   "python run_experiment.py --config config.json 2>&1 | tee run_n25.log"
 
 # n = 50
-cp config.json config_n50.json   # edit n_observation=50, nsims=2
+cp config.json config_n50.json   # edit n_observation=50
 tmux new-session -d -s gauss_n50 \
   "python run_experiment.py --config config_n50.json 2>&1 | tee run_n50.log"
 
 # n = 100
-cp config.json config_n100.json  # edit n_observation=100, nsims=1
+cp config.json config_n100.json  # edit n_observation=100
 tmux new-session -d -s gauss_n100 \
   "python run_experiment.py --config config_n100.json 2>&1 | tee run_n100.log"
 ```

@@ -289,7 +289,7 @@ mc.setdefault("epochs", 200)
 
 mc = MODELS_CONFIG.setdefault("npe", {})
 mc.setdefault("epochs", 1000)
-mc.setdefault("sbi_rounds", 2)
+mc.setdefault("sbi_rounds", 5)
 mc.setdefault("sims_per_round", 1000)
 
 mc = MODELS_CONFIG.setdefault("nle", {})
@@ -1466,7 +1466,7 @@ def run_single_experiment(
                 "Expected 'reload_checkpoint' or 'train_from_scratch'."
             )
     elif model_type in ["snpe_a", "npe", "snpe", "snpe_c"]:
-        sbi_rounds = model_cfg.get("sbi_rounds", 2)
+        sbi_rounds = model_cfg.get("sbi_rounds", 5)
         sims_per_round = model_cfg.get("sims_per_round", 1000)
         posterior_samples = run_sbi_model(
             model_type=model_type,
