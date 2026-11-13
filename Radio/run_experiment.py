@@ -34,7 +34,7 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
 
-from sbi_common.checkpoints import build_bayesflow_for_weights, released_weights, restore_torch
+from sbi_common.checkpoints import released_weights, restore_bayesflow, restore_torch, save_bayesflow
 from sbi_common.config_utils import is_evaluation, resolve_config_path
 from data_generation import load_task
 from models.smmd import SMMD_Model, sliced_mmd_loss
@@ -369,9 +369,6 @@ def main():
         str(project_root), config_path=str(cfg_path),
         observation_path=weights_dir / "data" / "turin_obs.npy" if evaluation else None,
     )
-    if evaluation and "bayesflow" in cfg.get("models_to_run", ["bayesflow"]):
-        with (project_root / "bayesflow_training_seeds.json").open() as f:
-            bayesflow_training_seeds = json.load(f)
     x_obs_mat = np.asarray(x_obs_mat, dtype=np.float32)[: int(task.N_rx), : int(task.Ns)]
     x_obs_mean = np.mean(x_obs_mat, axis=0).astype(np.float32)
     n_time_steps = int(task.Ns)
@@ -559,22 +556,31 @@ def main():
                 if evaluation:
                     from models.bayesflow_net import build_bayesflow_model
 
-                    # The archive stores network weights only. Recreate the
-                    # parameter scaling using the original training prior draws.
-                    rng_state = np.random.get_state()
-                    try:
-                        np.random.seed(bayesflow_training_seeds[str(round_seed)])
-                        theta = task.sample_prior(19200)
-                    finally:
-                        np.random.set_state(rng_state)
-                    model = build_bayesflow_model(
-                        task.d, 1, summary_dim=int(mc.get("summary_dim", 16)),
-                        theta_mean=theta.mean(axis=0), theta_std=np.maximum(theta.std(axis=0), 1e-12),
-                        standardize=None,
+                    def build_checkpoint_model(state):
+                        if state is None:
+                            # Legacy NPZ files need the scaling from the original prior draws.
+                            with (project_root / "bayesflow_training_seeds.json").open() as f:
+                                training_seed = json.load(f)[str(round_seed)]
+                            rng_state = np.random.get_state()
+                            try:
+                                np.random.seed(training_seed)
+                                theta = task.sample_prior(19200)
+                            finally:
+                                np.random.set_state(rng_state)
+                            mean, std = theta.mean(axis=0), np.maximum(theta.std(axis=0), 1e-12)
+                            standardize = None
+                        else:
+                            mean, std = [value.numpy() for value in state["theta_scaling"]]
+                            standardize = list(state["standardization"])
+                        return build_bayesflow_model(
+                            task.d, 1, summary_dim=int(mc.get("summary_dim", 16)),
+                            theta_mean=mean, theta_std=std, standardize=standardize,
+                        )
+
+                    model = restore_bayesflow(
+                        build_checkpoint_model, x_obs_mat, task.d, checkpoint,
+                        legacy_path=checkpoint.with_name(checkpoint.name + "_weights.npz"),
                     )
-                    build_bayesflow_for_weights(model, x_obs_mat, task.d)
-                    with np.load(checkpoint.with_name(checkpoint.name + "_weights.npz")) as archive:
-                        model.set_weights([archive[f"arr_{i}"] for i in range(len(archive.files))])
                 else:
                     model = train_bayesflow(
                         train_loader,
@@ -586,6 +592,12 @@ def main():
                         theta_mean=theta_mean,
                         theta_std=theta_std,
                     )
+
+                    if cfg.get("save_model_params", False):
+                        save_bayesflow(
+                            model, result_base / "checkpoints" / checkpoint.name,
+                            theta_scaling=(theta_mean, theta_std),
+                        )
 
                     def _bf_to_numpy(v):
                         if isinstance(v, np.ndarray):

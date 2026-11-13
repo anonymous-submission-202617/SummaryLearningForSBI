@@ -68,6 +68,12 @@ Models: SMMD, BayesFlow, DNN-ABC and NPE-RS (see `config.json`).
 python run_experiment.py --config config.json
 ```
 
+BayesFlow evaluation loads one summary (`*_summary.weights.h5`) and one
+flow (`*_inference.pt`) file per seed. The flow file also stores the
+parameter scaling used in that run. Set `save_model_params` to `true`
+to save the same pair under each round's `checkpoints/` directory when
+training new models.
+
 ## Outputs
 
 Written to `results/`:

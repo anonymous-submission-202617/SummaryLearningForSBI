@@ -213,7 +213,7 @@ class MyContinuousApproximator(bf.ContinuousApproximator):
         return super().call(inputs, **kwargs)
 
 
-def build_bayesflow_model(d, d_x, summary_dim=10):
+def build_bayesflow_model(d, d_x, summary_dim=10, **approximator_kwargs):
     summary_net = TimeSeriesSummary(input_dim=d_x, output_dim=summary_dim)
     inference_net = bf.networks.CouplingFlow(
         num_params=d,
@@ -225,5 +225,6 @@ def build_bayesflow_model(d, d_x, summary_dim=10):
         inference_network=inference_net,
         summary_network=summary_net,
         adapter=adapter,
+        **approximator_kwargs,
     )
     return approximator

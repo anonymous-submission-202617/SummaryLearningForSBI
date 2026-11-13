@@ -37,6 +37,12 @@ Models: SMMD, MMD, BayesFlow and DNN-ABC (see `config.json`).
 python run_experiment.py --config config.json
 ```
 
+BayesFlow evaluation loads the summary (`*_summary.weights.h5`) and flow
+(`*_inference.pt`) separately. The flow file also stores the fitted
+standardization statistics. Set `save_model_params` to `true` to save
+the same pair under `checkpoints/` in the calibration output directory
+when training a new model.
+
 ## Outputs
 
 Written to `results/calibration_expected_coverage/`:

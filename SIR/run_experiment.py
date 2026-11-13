@@ -20,6 +20,7 @@ import os
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 # Make the experiment package and the repository root importable regardless of cwd.
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -27,7 +28,7 @@ for _p in (_SCRIPT_DIR, os.path.dirname(_SCRIPT_DIR)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from sbi_common.checkpoints import build_bayesflow_for_weights, released_weights, restore_torch
+from sbi_common.checkpoints import released_weights, restore_bayesflow, restore_torch, save_bayesflow
 from sbi_common.config_utils import cli_config_arg, is_evaluation, resolve_config_path
 
 if "KERAS_BACKEND" not in os.environ:
@@ -327,13 +328,18 @@ def train_models(task, train_loader, models_to_run, models_config, *, weights_di
             elif model_name == "dnnabc":
                 model = restore_torch(DNNABC_Model(d=d, d_x=d_x), path, DEVICE)
             elif model_name == "bayesflow":
-                model = build_bayesflow_model(d, d_x, summary_dim=summary_dim)
-                build_bayesflow_for_weights(model, np.zeros((task.n_obs, d_x)), d)
-                path = path.with_suffix(".weights.h5")
-                model.load_weights(path)
+                path = path.with_suffix("")
+                model = restore_bayesflow(
+                    lambda state: build_bayesflow_model(
+                        d, d_x, summary_dim=summary_dim,
+                        standardize="all" if state is None else list(state["standardization"]),
+                    ),
+                    np.zeros((task.n_obs, d_x)), d, path,
+                    legacy_path=path.with_suffix(".weights.h5"),
+                )
             else:
                 raise ValueError(f"No released SIR checkpoint for {model_name!r}.")
-            print(f"Loaded {model_name} checkpoint: {path}")
+            print(f"Loaded {model_name} checkpoint from {path.parent}")
             trained[model_name] = model
             timings[model_name] = 0.0
             continue
@@ -956,6 +962,9 @@ def main():
         models_config=models_config,
         weights_dir=released_weights(_SCRIPT_DIR, "sir") if evaluation else None,
     )
+
+    if not evaluation and config.get("save_model_params", False) and "bayesflow" in trained_models:
+        save_bayesflow(trained_models["bayesflow"], Path(output_dir) / "checkpoints" / "bayesflow_sir_initial")
 
     # 2. Draw (or load cached) calibration pairs from p(theta, x) with a
     #    dedicated RNG so they are decoupled from the training RNG.

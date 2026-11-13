@@ -12,8 +12,11 @@ This experiment reproduces the **Lotka-Volterra results of the manuscript's
 Vague Prior*):
 
 - **Table 3 ("Results for Lotka-Volterra model.")** — bias, credible-interval
-  length, coverage and conditional calibration error, averaged over the 100
-  replications, together with average runtime;
+  length, coverage and conditional calibration error, together with average
+  runtime. The experiment attempts 100 replications; BayesFlow metrics are
+  averaged over successful replications only. Exploding gradients can make
+  its KL-based optimization fail on this benchmark. Failed replications are
+  excluded from both the aggregate metrics and their denominators;
 - the **Refine+ figure** — posterior density plots across the stages of the
   Refine+ procedure ("Amortized", "Sequential" and "Refine+ (MCMC)") for the
   SMMD variant. It is produced by `plot_refinement_comparison` and written
