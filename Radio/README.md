@@ -16,6 +16,11 @@ dataset from the public benchmark repository of Huang et al. (2023)
 measurements in its radio-propagation application. It is used as the fixed
 observed dataset throughout the experiment.
 
+The distributed file already contains power values in decibels. We retain
+all 100 traces and all 801 points per trace and cast the array to `float32`.
+We do not rescale, smooth, or truncate the traces or extract hand-crafted
+features before passing the full traces to the summary networks.
+
 Gustafson, C., Bolin, D., & Tufvesson, F. (2016). Modeling the polarimetric
 mm-wave propagation channel using censored measurements. In *2016 IEEE
 Global Communications Conference (GLOBECOM)*, pp. 1–6.
