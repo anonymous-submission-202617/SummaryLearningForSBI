@@ -25,7 +25,8 @@ for _p in (_SCRIPT_DIR, os.path.dirname(_SCRIPT_DIR)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from sbi_common.config_utils import cli_config_arg, resolve_config_path
+from sbi_common.checkpoints import released_weights, restore_torch
+from sbi_common.config_utils import cli_config_arg, is_evaluation, resolve_config_path
 
 # Reduce cross-device numeric drift on NVIDIA CUDA for ablation runs.
 # Data/model randomness is fixed below from the configurable ``seed``.
@@ -117,7 +118,17 @@ except (FileNotFoundError, TypeError):
 
 # Results are written next to the script (cwd-independent), or to the
 # directory requested via LV_RESULTS_DIR (used e.g. for smoke tests).
-RESULTS_BASE = os.path.join(_SCRIPT_DIR, os.environ.get("LV_RESULTS_DIR", "results"))
+EVALUATION = is_evaluation(CONFIG)
+# Set to True to train missing BayesFlow replications during evaluation.
+# New experiments always follow the regular training workflow.
+RETRAIN_MISSING_BAYESFLOW = False
+REFINEMENT_MODELS = {"smmd", "mmd", "bayesflow"}
+RESULTS_DIR = "results"
+if EVALUATION:
+    RESULTS_DIR = "results_evaluation_bayesflow_retrained" if RETRAIN_MISSING_BAYESFLOW else "results_evaluation"
+RESULTS_BASE = os.path.join(
+    _SCRIPT_DIR, os.environ.get("LV_RESULTS_DIR", RESULTS_DIR)
+)
 
 # Reproducibility: base seed; each round is re-seeded with
 # ``BASE_SEED + round_idx - 1`` so every round's data generation is
@@ -171,6 +182,8 @@ DATASET_SIZE = CONFIG.get("dataset_size", 20000)
 VAL_SIZE = CONFIG.get("val_size", 1000)
 BATCH_SIZE = CONFIG.get("batch_size", 128)
 NUM_ROUNDS = CONFIG.get("num_rounds", 5)
+if EVALUATION and os.environ.get("LV_QUICK_TEST") != "1":
+    NUM_ROUNDS = int(CONFIG.get("evaluation_num_rounds", NUM_ROUNDS))
 MODELS_TO_RUN = CONFIG.get("models_to_run", ["smmd"])
 MODELS_CONFIG = CONFIG.get("models_config", {})
 REFINEMENT_CONFIG = CONFIG.get("refinement_config", {})
@@ -327,8 +340,6 @@ def train_bayesflow(
     first_batch = next(iter(train_loader))
     first_x, first_theta = first_batch[0], first_batch[1]
     
-    n_current = first_x.shape[1]
-    
     # Build model
     if model is None:
         amortized_posterior = build_bayesflow_model(
@@ -343,12 +354,15 @@ def train_bayesflow(
         amortized_posterior = model
         amortized_posterior.inference_l1_lambda = float(l1_lambda)
     
+    def prepare_theta(theta):
+        if getattr(amortized_posterior, "inference_in_log_space", False):
+            return theta.float()
+        return torch.from_numpy(box_to_unconstrained(theta.float().cpu().numpy(), theta_lower, theta_upper))
+
     # Manual build
     try:
         dummy_dict = {
-            "inference_variables": torch.from_numpy(
-                box_to_unconstrained(first_theta.float().cpu().numpy(), theta_lower, theta_upper)
-            ).float(),
+            "inference_variables": prepare_theta(first_theta),
             "summary_variables": first_x.float()
         }
         if hasattr(amortized_posterior, "adapter"):
@@ -387,14 +401,9 @@ def train_bayesflow(
             # For this implementation, we assume weighted training for BayesFlow is handled via Resampling 
             # (which happens before creating the loader).
             
-            x_batch_cpu = x_batch
-            theta_batch_cpu = theta_batch
-            
             batch_dict = {
-                "inference_variables": torch.from_numpy(
-                    box_to_unconstrained(theta_batch_cpu.cpu().numpy(), theta_lower, theta_upper)
-                ).float(),
-                "summary_variables": x_batch_cpu
+                "inference_variables": prepare_theta(theta_batch),
+                "summary_variables": x_batch,
             }
             
             try:
@@ -404,9 +413,13 @@ def train_bayesflow(
                     loss_val = loss_val.item()
                 else:
                     loss_val = float(loss_val)
+                if EVALUATION and not np.isfinite(loss_val):
+                    raise FloatingPointError("Nonfinite BayesFlow training loss.")
                 epoch_loss += loss_val
                 num_batches += 1
             except Exception as e:
+                if EVALUATION:
+                    raise
                 print(f"Error in train_step: {e}")
                 break
         
@@ -1615,7 +1628,45 @@ def plot_final_posteriors_theta(final_model_samples, theta_true, output_dir, fil
 # 3. Experiment Runner
 # ============================================================================
 
-def run_single_experiment(model_type, task, train_loader, theta_true, x_obs, round_id, model_config={}, initial_training_data=None):
+def load_bayesflow_checkpoint(task, x_obs, summary_path, inference_path, summary_dim):
+    """Restore the released summary and flow for a BayesFlow replication."""
+    # Keras state keys contain generated layer names. Build in the same order
+    # as the export, with the flow built before the enclosing approximator.
+    keras.backend.clear_session()
+    model = build_bayesflow_model(
+        d, d_x, summary_dim=summary_dim, theta_lower=task.lower,
+        theta_upper=task.upper, standardize=None,
+    )
+    x = np.asarray(x_obs, dtype=np.float32)[None, ...]
+    with torch.no_grad():
+        conditions = model.summary_network(x)
+        model.inference_network.log_prob(torch.zeros((1, d)), conditions=conditions)
+        model.build({"summary_variables": x.shape, "inference_variables": (1, d)})
+    model.summary_network.load_weights(summary_path)
+    model.inference_network.load_state_dict(
+        torch.load(inference_path, map_location="cpu", weights_only=True)
+    )
+    # The released flow was fitted directly on log parameters. Keep this
+    # coordinate system when drawing samples and continuing its training.
+    model.inference_in_log_space = True
+    print(f"Loaded BayesFlow summary and flow for {summary_path.name}.")
+    return model
+
+
+def sample_bayesflow_log_theta(model, x, num_samples):
+    post = model.sample(conditions={"summary_variables": x}, num_samples=num_samples)
+    theta = np.asarray(post["inference_variables"]).reshape(-1, d)
+    if EVALUATION and not np.isfinite(theta).all():
+        raise FloatingPointError("Nonfinite BayesFlow posterior samples.")
+    if getattr(model, "inference_in_log_space", False):
+        return np.clip(theta, model.theta_lower, model.theta_upper)
+    return unconstrained_to_box(theta, model.theta_lower, model.theta_upper)
+
+
+def run_single_experiment(
+    model_type, task, train_loader, theta_true, x_obs, round_id, model_config={},
+    initial_training_data=None, checkpoint_path=None, inference_path=None,
+):
     """
     Runs a single experiment: Train -> Sample -> Compute Metrics
     """
@@ -1633,8 +1684,22 @@ def run_single_experiment(model_type, task, train_loader, theta_true, x_obs, rou
     
     n_obs_curr = x_obs.shape[0] # Time steps
     
-    # 1. Train
-    if model_type == "smmd":
+    # 1. Restore or train the posterior estimator.
+    if checkpoint_path is not None:
+        if model_type in {"smmd", "mmd"}:
+            cls = SMMD_Model if model_type == "smmd" else MMD_Model
+            model = restore_torch(
+                cls(summary_dim=model_config.get("summary_dim", 10), d=d, d_x=d_x,
+                    n=n_obs_curr, theta_lower=task.lower, theta_upper=task.upper),
+                checkpoint_path, DEVICE,
+            )
+        elif model_type == "bayesflow":
+            model = load_bayesflow_checkpoint(
+                task, x_obs, checkpoint_path, inference_path, model_config.get("summary_dim", 10),
+            )
+        elif model_type == "dnnabc":
+            model = restore_torch(DNNABC_Model(d=d, d_x=d_x), checkpoint_path, DEVICE)
+    elif model_type == "smmd":
         summary_dim = model_config.get("summary_dim", 10)
         model = SMMD_Model(
             summary_dim=summary_dim,
@@ -1702,7 +1767,7 @@ def run_single_experiment(model_type, task, train_loader, theta_true, x_obs, rou
             sample_with=sample_with,
             theta_space="scaled",
             preprocess_obs_fn=preprocess_observations,
-            initial_training_data=initial_training_data
+            initial_training_data=initial_training_data, checkpoint_path=checkpoint_path,
         )
     elif model_type == "dnnabc":
         n_pool = model_config.get("n_pool", 100000)
@@ -1719,22 +1784,18 @@ def run_single_experiment(model_type, task, train_loader, theta_true, x_obs, rou
         x_obs_cpu = x_obs if isinstance(x_obs, np.ndarray) else x_obs.cpu().numpy()
         if x_obs_cpu.ndim == 2: x_obs_cpu = x_obs_cpu[np.newaxis, ...]
         
-        # BayesFlow Sample
-        post = model.sample(conditions={"summary_variables": x_obs_cpu}, num_samples=n_samples)
-        if isinstance(post, dict):
-            post = post["inference_variables"]
-        if hasattr(post, "numpy"):
-            post = post.numpy()
-        posterior_samples = np.asarray(post).reshape(-1, d)
-        posterior_samples = unconstrained_to_box(posterior_samples, model.theta_lower, model.theta_upper)
-        
+        posterior_samples = sample_bayesflow_log_theta(model, x_obs_cpu, n_samples)
+
         std_per_dim = np.std(posterior_samples, axis=0)
         max_abs = np.max(np.abs(posterior_samples), axis=0)
         has_nan = not np.isfinite(posterior_samples).all()
         zero_var = np.any(std_per_dim < 1e-6)
         extreme = np.any(max_abs > 1e3)
         if has_nan or zero_var or extreme:
-            print("BayesFlow posterior samples failed sanity check.")
+            message = "BayesFlow posterior samples failed sanity check."
+            if EVALUATION:
+                raise FloatingPointError(message)
+            print(message)
             metrics = {
                 "stage": "initial",
                 "bias_l2": np.nan,
@@ -1766,24 +1827,24 @@ def run_single_experiment(model_type, task, train_loader, theta_true, x_obs, rou
     metrics["sampling_time"] = sampling_time
     metrics["stage"] = "initial"
     metrics_initial = metrics.copy()
-    
+
     # Store Initial: total wall-clock for initial posterior (train + sample)
     timings["initial"] = training_time + sampling_time
     samples_dict["initial"] = posterior_samples
     sample_spaces["initial"] = "log"
-    
+
     # Save Samples & Plot
     # Structure: results/models/{model_type}/round_{round_id}/initial/
     base_dir = f"{RESULTS_BASE}/models/{model_type}/round_{round_id}/initial"
     os.makedirs(base_dir, exist_ok=True)
-    
+
     np.save(f"{base_dir}/posterior_samples.npy", posterior_samples)
     plot_posterior(posterior_samples, theta_true, base_dir, "posterior_plot.png", sample_space="log", plot_space="log")
-    
+
     print(f"Bias L2: {metrics['bias_l2']:.4f}")
     print(f"HDI Length per param: {metrics['hdi_length']}")
     print(f"Coverage per param: {metrics['coverage']}")
-    
+
     # ========================================================================
     # 4. Save Initial Model
     # ========================================================================
@@ -1801,10 +1862,10 @@ def run_single_experiment(model_type, task, train_loader, theta_true, x_obs, rou
     # ========================================================================
     # 5. Sequential Training (intermediate stage before RefinePlus MCMC)
     # ========================================================================
-    run_refined_training = model_type in ["smmd", "mmd", "bayesflow"]
-    
-    # Store theta_init for MCMC
-    theta_init_mcmc = None
+    run_refined_training = model_type in REFINEMENT_MODELS
+
+    # Start MCMC from the amortized posterior if sequential training is disabled.
+    theta_init_mcmc = np.exp(posterior_samples) if EVALUATION and run_refined_training else None
     metrics_sequential = None
     
     if run_refined_training:
@@ -1840,13 +1901,7 @@ def run_single_experiment(model_type, task, train_loader, theta_true, x_obs, rou
                         if x_obs_cpu.ndim == 2:
                             x_obs_cpu = x_obs_cpu[np.newaxis, ...]
                         x_obs_rep = np.tile(x_obs_cpu, (bsz, 1, 1))
-                        post = model.sample(conditions={"summary_variables": x_obs_rep}, num_samples=1)
-                        if isinstance(post, dict):
-                            post = post["inference_variables"]
-                        if hasattr(post, "numpy"):
-                            post = post.numpy()
-                        theta_b = np.asarray(post).reshape(bsz, -1)
-                        theta_b = unconstrained_to_box(theta_b, model.theta_lower, model.theta_upper)
+                        theta_b = sample_bayesflow_log_theta(model, x_obs_rep, 1)
                     elif hasattr(model, "sample_posterior"):
                         theta_b = model.sample_posterior(x_obs, bsz)
                     else:
@@ -1877,13 +1932,8 @@ def run_single_experiment(model_type, task, train_loader, theta_true, x_obs, rou
             # Simulate x from q_train
             x_new = preprocess_observations(task.simulator(theta_new))
              
-            # Prior Data (Reuse old training data)
-            print(f"3. Reusing {N_new} samples from initial training data...")
-            # Reuse original training data (theta_train, x_train)
-            # Need to ensure N_new matches or we subsample/repeat
-            # train_loader has the data. Let's extract it or use the variables from main loop if passed.
-            # But run_single_experiment takes train_loader.
-            # We can iterate train_loader to get all data.
+            # Evaluation regenerates the prior pool used by sequential training.
+            print(f"3. Preparing {N_new} prior samples for the training mixture...")
             
             theta_old_list = []
             x_old_list = []
@@ -1961,7 +2011,10 @@ def run_single_experiment(model_type, task, train_loader, theta_true, x_obs, rou
                      learning_rate=model_config.get("learning_rate", LEARNING_RATE),
                  )
             else:
-                 loss_hist_retrain, time_retrain = train_smmd_mmd(model, loader_retrain, epochs=epochs, device=DEVICE, model_type=model_type)
+                 loss_hist_retrain, time_retrain = train_smmd_mmd(
+                     model, loader_retrain, epochs=epochs, device=DEVICE, model_type=model_type,
+                     n_time_steps=n_obs_curr,
+                 )
             
             print(f"   Retraining done in {time_retrain:.2f}s")
             
@@ -2034,8 +2087,8 @@ def run_single_experiment(model_type, task, train_loader, theta_true, x_obs, rou
     # ========================================================================
     # 6. ABC-MCMC Refinement (For SMMD/MMD/BayesFlow)
     # ========================================================================
-    run_mcmc = (model_type in ["smmd", "mmd", "bayesflow"]) and bool(model_config.get("run_mcmc", True))
-    
+    run_mcmc = model_type in REFINEMENT_MODELS and bool(model_config.get("run_mcmc", True))
+
     if run_mcmc:
         # Check Refined Mode for MCMC
         refined_mode = model_config.get("refined_mode", 1)
@@ -2061,7 +2114,8 @@ def run_single_experiment(model_type, task, train_loader, theta_true, x_obs, rou
         if mcmc_total_steps < 2:
             mcmc_total_steps = 2
         mcmc_burn_in = int(model_config.get("mcmc_burn_in", mcmc_total_steps - 1))
-        refine_dir = f"{RESULTS_BASE}/models/{model_type}/round_{round_id}/refineplus"
+        stage = "refineplus"
+        refine_dir = f"{RESULTS_BASE}/models/{model_type}/round_{round_id}/{stage}"
         os.makedirs(refine_dir, exist_ok=True)
         
         # Pass theta_init_mcmc if available (from Refined+)
@@ -2085,16 +2139,8 @@ def run_single_experiment(model_type, task, train_loader, theta_true, x_obs, rou
         
         # Metrics MCMC
         metrics_refineplus = compute_metrics(theta_mcmc, theta_true, sample_space="theta")
-        # Training time includes retrain time if applicable
-        total_train_time = training_time
-        if run_refined_training:
-             # We didn't capture time_retrain variable scope outside if block easily without initialization
-             # But we can approximate or use what we have. 
-             # Let's just add it if it happened.
-             pass 
-             
-        metrics_refineplus["training_time"] = total_train_time + time_mcmc
-        metrics_refineplus["stage"] = "refineplus"
+        metrics_refineplus["training_time"] = training_time + timings["refined_plus"]
+        metrics_refineplus["stage"] = stage
         print(f"   RefinePlus Bias L2: {metrics_refineplus['bias_l2']:.4f}")
         print(f"   RefinePlus HDI Length (Mean): {np.mean(metrics_refineplus['hdi_length']):.4f}")
         print(f"   RefinePlus Coverage (Mean): {np.mean(metrics_refineplus['coverage']):.4f}")
@@ -2132,12 +2178,13 @@ def run_single_experiment(model_type, task, train_loader, theta_true, x_obs, rou
     }
 
 def main():
-    os.makedirs("results", exist_ok=True)
     os.makedirs(f"{RESULTS_BASE}/ground_truth", exist_ok=True)
     os.makedirs(f"{RESULTS_BASE}/calibration", exist_ok=True)
     
     # Use global config
     MODELS = MODELS_TO_RUN
+    weights_dir = released_weights(_SCRIPT_DIR, "lv") if EVALUATION else None
+    evaluated_stages = {name: set() for name in MODELS}
     
     # Aggregated Results
     model_results_table = {m: [] for m in MODELS}
@@ -2155,9 +2202,7 @@ def main():
     def _compute_and_save_calibration():
         summary_rows = []
         for model_name in MODELS:
-            stages = ["initial"]
-            if model_name in ["smmd", "mmd", "bayesflow"]:
-                stages.append("refineplus")
+            stages = sorted({stage for _, stage in evaluated_stages[model_name]})
 
             for stage in stages:
                 theta_true_rounds = []
@@ -2170,14 +2215,11 @@ def main():
                     gt = np.load(gt_path)
                     theta_true = np.asarray(gt["theta_true"], dtype=np.float32)
 
-                    if stage == "initial":
-                        samples_path = (
-                            f"{RESULTS_BASE}/models/{model_name}/round_{round_idx}/initial/posterior_samples.npy"
-                        )
-                    else:
-                        samples_path = (
-                            f"{RESULTS_BASE}/models/{model_name}/round_{round_idx}/refineplus/posterior_samples.npy"
-                        )
+                    if (round_idx, stage) not in evaluated_stages[model_name]:
+                        continue
+                    samples_path = (
+                        f"{RESULTS_BASE}/models/{model_name}/round_{round_idx}/{stage}/posterior_samples.npy"
+                    )
 
                     if not os.path.exists(samples_path):
                         continue
@@ -2204,7 +2246,7 @@ def main():
                     posterior_samples_by_round=posterior_samples_by_round,
                     theta_true_by_round=theta_true_by_round,
                     n_steps=100,
-                    posterior_sample_space="theta" if stage == "refineplus" else "log",
+                    posterior_sample_space="log" if stage == "initial" else "theta",
                 )
 
                 out_npz = f"{RESULTS_BASE}/calibration/{model_name}_{stage}.npz"
@@ -2240,38 +2282,42 @@ def main():
         t_max = (N_TIME_STEPS - 1) * dt
         task = LVTask(t_max=t_max, dt=dt)
         
-        print(f"Generating training data (N={DATASET_SIZE}, T_MAX={t_max:.1f}, Steps={N_TIME_STEPS})...")
-        theta_train = task.sample_prior(DATASET_SIZE, "vague")
-        x_train = preprocess_observations(task.simulator(theta_train))
-        theta_train_scaled = scale_theta_np(theta_train, task.lower, task.upper).astype(np.float32)
+        initial_training_data = None
+        evaluation_prior = None
+        if not EVALUATION:
+            print(f"Generating training data (N={DATASET_SIZE}, T_MAX={t_max:.1f}, Steps={N_TIME_STEPS})...")
+            theta_train = task.sample_prior(DATASET_SIZE, "vague")
+            x_train = preprocess_observations(task.simulator(theta_train))
+            theta_train_scaled = scale_theta_np(theta_train, task.lower, task.upper).astype(np.float32)
         
-        x_tensor = torch.from_numpy(x_train).float()
-        theta_tensor = torch.from_numpy(theta_train).float()
-        theta_tensor_scaled = torch.from_numpy(theta_train_scaled).float()
+            x_tensor = torch.from_numpy(x_train).float()
+            theta_tensor = torch.from_numpy(theta_train).float()
+            theta_tensor_scaled = torch.from_numpy(theta_train_scaled).float()
         
-        smmd_n = min(SMMD_INITIAL_TRAIN_SAMPLES, DATASET_SIZE)
-        bayesflow_conf = MODELS_CONFIG.get("bayesflow", {})
-        bayesflow_n = min(
-            int(bayesflow_conf.get("initial_train_samples", SMMD_INITIAL_TRAIN_SAMPLES)),
-            DATASET_SIZE,
-        )
-        dnnabc_conf = MODELS_CONFIG.get("dnnabc", {})
-        dnnabc_train_n = min(dnnabc_conf.get("train_samples", DATASET_SIZE), DATASET_SIZE)
+            smmd_n = min(SMMD_INITIAL_TRAIN_SAMPLES, DATASET_SIZE)
+            bayesflow_conf = MODELS_CONFIG.get("bayesflow", {})
+            bayesflow_n = min(
+                int(bayesflow_conf.get("initial_train_samples", SMMD_INITIAL_TRAIN_SAMPLES)),
+                DATASET_SIZE,
+            )
+            dnnabc_conf = MODELS_CONFIG.get("dnnabc", {})
+            dnnabc_train_n = min(dnnabc_conf.get("train_samples", DATASET_SIZE), DATASET_SIZE)
         
-        dataset_smmd = TensorDataset(x_tensor[:smmd_n], theta_tensor[:smmd_n])
-        train_loader_smmd = DataLoader(dataset_smmd, batch_size=BATCH_SIZE, shuffle=True)
+            dataset_smmd = TensorDataset(x_tensor[:smmd_n], theta_tensor[:smmd_n])
+            train_loader_smmd = DataLoader(dataset_smmd, batch_size=BATCH_SIZE, shuffle=True)
 
-        dataset_bayesflow = TensorDataset(x_tensor[:bayesflow_n], theta_tensor[:bayesflow_n])
-        train_loader_bayesflow = DataLoader(dataset_bayesflow, batch_size=BATCH_SIZE, shuffle=True)
+            dataset_bayesflow = TensorDataset(x_tensor[:bayesflow_n], theta_tensor[:bayesflow_n])
+            train_loader_bayesflow = DataLoader(dataset_bayesflow, batch_size=BATCH_SIZE, shuffle=True)
         
-        dataset_dnnabc = TensorDataset(x_tensor[:dnnabc_train_n], theta_tensor_scaled[:dnnabc_train_n])
-        train_loader_dnnabc = DataLoader(dataset_dnnabc, batch_size=BATCH_SIZE, shuffle=True)
+            dataset_dnnabc = TensorDataset(x_tensor[:dnnabc_train_n], theta_tensor_scaled[:dnnabc_train_n])
+            train_loader_dnnabc = DataLoader(dataset_dnnabc, batch_size=BATCH_SIZE, shuffle=True)
         
-        dataset_full = TensorDataset(x_tensor, theta_tensor)
-        train_loader_full = DataLoader(dataset_full, batch_size=BATCH_SIZE, shuffle=True)
+            dataset_full = TensorDataset(x_tensor, theta_tensor)
+            train_loader_full = DataLoader(dataset_full, batch_size=BATCH_SIZE, shuffle=True)
 
-        dataset_full_scaled = TensorDataset(x_tensor, theta_tensor_scaled)
-        train_loader_full_scaled = DataLoader(dataset_full_scaled, batch_size=BATCH_SIZE, shuffle=True)
+            dataset_full_scaled = TensorDataset(x_tensor, theta_tensor_scaled)
+            train_loader_full_scaled = DataLoader(dataset_full_scaled, batch_size=BATCH_SIZE, shuffle=True)
+            initial_training_data = (x_train, theta_train)
         
         # Use the task's fixed ground-truth parameters so that per-round
         # metrics (interval length, coverage) are comparable across rounds.
@@ -2288,6 +2334,27 @@ def main():
         
         # Run Models
         for model_name in MODELS:
+            retrain_bayesflow = False
+            checkpoint_path = inference_path = None
+            if EVALUATION:
+                if model_name not in {"smmd", "mmd", "bayesflow", "dnnabc", "snpe_c", "npe", "snpe"}:
+                    raise ValueError(f"No released Lotka-Volterra checkpoint for {model_name!r}.")
+                name = "snpe_c" if model_name in {"npe", "snpe"} else model_name
+                suffix = ".weights.h5" if name == "bayesflow" else ".pt"
+                checkpoint_path = weights_dir / name / f"{name}_lv_seed{round_seed:02d}{suffix}"
+                if name == "bayesflow":
+                    inference_path = weights_dir / name / f"{name}_lv_seed{round_seed:02d}_inference.pt"
+                    if not (checkpoint_path.is_file() and inference_path.is_file()):
+                        if checkpoint_path.is_file() or inference_path.is_file():
+                            print(f"Incomplete BayesFlow checkpoint for seed {round_seed}.")
+                        if not RETRAIN_MISSING_BAYESFLOW:
+                            print(f"Skipping BayesFlow for seed {round_seed}: no complete checkpoint.")
+                            continue
+                        checkpoint_path = inference_path = None
+                        retrain_bayesflow = True
+                        print(f"Training BayesFlow from scratch for seed {round_seed}.")
+                elif not checkpoint_path.is_file():
+                    raise FileNotFoundError(checkpoint_path)
             try:
                 model_conf = MODELS_CONFIG.get(model_name, {})
                 if model_name in ["snpe_a", "snpe_b", "npe", "snpe", "snpe_c"] and not model_conf:
@@ -2295,7 +2362,34 @@ def main():
                 if isinstance(model_conf, int):
                     model_conf = {"epochs": model_conf}
                 
-                if model_name in ["smmd", "mmd"]:
+                if EVALUATION:
+                    train_loader_model = None
+                    needs_prior = retrain_bayesflow or (
+                        model_name in REFINEMENT_MODELS
+                        and model_conf.get("refined_mode", 1) != 0
+                        and int(model_conf.get("num_refine_rounds", 1)) > 0
+                    )
+                    if needs_prior:
+                        if evaluation_prior is None:
+                            rng_state = np.random.get_state()
+                            try:
+                                np.random.seed(round_seed)
+                                theta_prior = task.sample_prior(DATASET_SIZE, "vague")
+                                x_prior = preprocess_observations(task.simulator(theta_prior))
+                            finally:
+                                np.random.set_state(rng_state)
+                            evaluation_prior = (
+                                torch.from_numpy(x_prior).float(), torch.from_numpy(theta_prior).float()
+                            )
+                        n_train = min(
+                            int(model_conf.get("initial_train_samples", SMMD_INITIAL_TRAIN_SAMPLES)),
+                            DATASET_SIZE,
+                        )
+                        dataset_prior = TensorDataset(*(t[:n_train] for t in evaluation_prior))
+                        train_loader_model = DataLoader(dataset_prior, batch_size=BATCH_SIZE, shuffle=True)
+                    if retrain_bayesflow:
+                        keras.utils.set_random_seed(round_seed)
+                elif model_name in ["smmd", "mmd"]:
                     train_loader_model = train_loader_smmd
                 elif model_name == "bayesflow":
                     train_loader_model = train_loader_bayesflow
@@ -2309,7 +2403,8 @@ def main():
                 res = run_single_experiment(
                     model_name, task, train_loader_model, theta_true, x_obs, round_idx,
                     model_config=model_conf,
-                    initial_training_data=(x_train, theta_train)
+                    initial_training_data=initial_training_data, checkpoint_path=checkpoint_path,
+                    inference_path=inference_path,
                 )
                 
                 if res:
@@ -2335,7 +2430,7 @@ def main():
                         if isinstance(final_refineplus, torch.Tensor):
                             final_refineplus = final_refineplus.detach().cpu().numpy()
 
-                        if final_refineplus is not None:
+                        if final_refineplus is not None and metrics["stage"] == "refineplus":
                             round_refinement_data[model_name] = {
                                 "Amortized": round_initial_samples.get(model_name),
                                 "RefinePlus": final_refineplus,
@@ -2388,8 +2483,9 @@ def main():
                             round_final_sample_spaces["MMD"] = round_initial_sample_spaces.get(model_name, "log")
                     elif model_name == "bayesflow":
                         if final_refineplus is not None:
-                            round_final_samples["BAYESFLOW (RefinePlus)"] = final_refineplus
-                            round_final_sample_spaces["BAYESFLOW (RefinePlus)"] = result_sample_spaces.get("refineplus", "theta")
+                            if metrics["stage"] == "refineplus":
+                                round_final_samples["BAYESFLOW (RefinePlus)"] = final_refineplus
+                                round_final_sample_spaces["BAYESFLOW (RefinePlus)"] = result_sample_spaces.get("refineplus", "theta")
                         else:
                             round_final_samples["BAYESFLOW"] = round_initial_samples.get(model_name)
                             round_final_sample_spaces["BAYESFLOW"] = round_initial_sample_spaces.get(model_name, "log")
@@ -2406,7 +2502,14 @@ def main():
                     row = metrics.copy()
                     row["round"] = round_idx
                     row["seed"] = round_seed
-                    row["status"] = 1
+                    row["status"] = int(np.isfinite(metrics["bias_l2"]))
+                    if EVALUATION and model_name == "bayesflow":
+                        row["weight_source"] = "from_scratch" if retrain_bayesflow else "checkpoint"
+                    if row["status"]:
+                        if metrics_initial is not None and np.isfinite(metrics_initial["bias_l2"]):
+                            evaluated_stages[model_name].add((round_idx, "initial"))
+                        if metrics["stage"] == "refineplus":
+                            evaluated_stages[model_name].add((round_idx, metrics["stage"]))
                     
                     if metrics_initial is not None:
                         if "bias_l2" in metrics_initial:
@@ -2415,7 +2518,7 @@ def main():
                             row["hdi_length_initial"] = metrics_initial["hdi_length"]
                         if "coverage" in metrics_initial:
                             row["coverage_initial"] = metrics_initial["coverage"]
-                    else:
+                    elif metrics["stage"] == "initial":
                         if "bias_l2" in metrics:
                             row["bias_l2_initial"] = metrics["bias_l2"]
                         if "hdi_length" in metrics:
@@ -2431,7 +2534,7 @@ def main():
                                 row["hdi_length_sequential"] = metrics_sequential["hdi_length"]
                             if "coverage" in metrics_sequential:
                                 row["coverage_sequential"] = metrics_sequential["coverage"]
-                        if metrics.get("stage") == "refineplus":
+                        if metrics["stage"] == "refineplus":
                             if "bias_l2" in metrics:
                                 row["bias_l2_refineplus"] = metrics["bias_l2"]
                             if "hdi_length" in metrics:
@@ -2455,6 +2558,10 @@ def main():
                 print(f"Error running {model_name}: {e}")
                 import traceback
                 traceback.print_exc()
+                if EVALUATION and not retrain_bayesflow and not (
+                    model_name == "bayesflow" and isinstance(e, FloatingPointError)
+                ):
+                    raise
                 
                 # Record failure
                 row = {
@@ -2463,6 +2570,8 @@ def main():
                     "status": 0, # Failure
                     "error_msg": str(e)
                 }
+                if EVALUATION and model_name == "bayesflow":
+                    row["weight_source"] = "from_scratch" if retrain_bayesflow else "checkpoint"
                 model_results_table[model_name].append(row)
 
         if round_initial_samples:
@@ -2666,11 +2775,12 @@ def aggregate_and_save_results(model_results_table):
             if model_name in refine_models and "coverage_refineplus" in r:
                 coverage_refineplus_list.append(np.asarray(r["coverage_refineplus"], dtype=float))
         
-        hdi_initial_arr = np.vstack(hdi_initial_list)
-        avg_hdi_len_initial = hdi_initial_arr.mean(axis=0)
-        
-        coverage_initial_arr = np.vstack(coverage_initial_list)
-        avg_coverage_initial = coverage_initial_arr.mean(axis=0)
+        avg_hdi_len_initial = (
+            np.mean(hdi_initial_list, axis=0) if hdi_initial_list else np.full(num_params, np.nan)
+        )
+        avg_coverage_initial = (
+            np.mean(coverage_initial_list, axis=0) if coverage_initial_list else np.full(num_params, np.nan)
+        )
         
         if hdi_refineplus_list:
             hdi_refineplus_arr = np.vstack(hdi_refineplus_list)
@@ -2688,8 +2798,8 @@ def aggregate_and_save_results(model_results_table):
         avg_sec_sl = np.mean([r["seconds_refined_plus"] for r in success_rows])
         avg_sec_mcmc = np.mean([r["seconds_mcmc"] for r in success_rows])
         
-        mean_bias_initial = np.mean(bias_initial)
-        median_bias_initial = np.median(bias_initial)
+        mean_bias_initial = np.mean(bias_initial) if bias_initial else np.nan
+        median_bias_initial = np.median(bias_initial) if bias_initial else np.nan
         
         if bias_refineplus:
             mean_bias_refineplus = np.mean(bias_refineplus)
@@ -2699,9 +2809,10 @@ def aggregate_and_save_results(model_results_table):
             median_bias_refineplus = np.nan
         
         print(f"\nModel: {model_name.upper()}")
-        print(f"  Bias L2 (Initial): Mean={mean_bias_initial:.4f}")
+        if bias_initial:
+            print(f"  Bias L2 (Initial, {len(bias_initial)} rounds): Mean={mean_bias_initial:.4f}")
         if not np.isnan(mean_bias_refineplus):
-            print(f"  Bias L2 (Refine+): Mean={mean_bias_refineplus:.4f}")
+            print(f"  Bias L2 (Refine+, {len(bias_refineplus)} rounds): Mean={mean_bias_refineplus:.4f}")
         print(f"  HDI Len (Initial) per param: {avg_hdi_len_initial}")
         if not np.all(np.isnan(avg_hdi_len_refineplus)):
             print(f"  HDI Len (Refine+) per param: {avg_hdi_len_refineplus}")
@@ -2716,6 +2827,8 @@ def aggregate_and_save_results(model_results_table):
         
         summary_row = {
             "Model": model_name,
+            "Initial_Rounds": len(bias_initial),
+            "RefinePlus_Rounds": len(bias_refineplus),
             "Bias_Mean": mean_bias_initial,
             "RefinePlus_Bias_Mean": mean_bias_refineplus,
             "Bias_Median": median_bias_initial,

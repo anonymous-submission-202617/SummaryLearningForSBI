@@ -634,6 +634,8 @@ def compute_bandwidth_bayesflow(
         if hasattr(post, "numpy"):
             post = post.numpy()
         theta0_np = np.asarray(post).reshape(n_samples, -1)
+        if getattr(model, "inference_in_log_space", False):
+            theta0_np = np.clip(theta0_np, task.lower, task.upper)
     except Exception as e:
         print(f"Warning: Failed to sample BayesFlow posterior for bandwidth: {e}")
 

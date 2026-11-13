@@ -33,8 +33,6 @@ Gaussian/data/_smoke_reload_verification/
 Gaussian/data/artifacts/
 Gaussian/data/plots/
 Gaussian/data/*.pt
-!Gaussian/data/nle_checkpoint.pt
-!Gaussian/data/td_npse_checkpoint.pt
 Gaussian/data/*.json
 
 # Notebooks

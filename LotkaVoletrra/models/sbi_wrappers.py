@@ -12,6 +12,9 @@ except ImportError:
     # sbi <= 0.19: legacy NPE* naming.
     from sbi.inference import NPE, NPE_A, NPE_B
 from sbi.utils import BoxUniform
+from sbi.neural_nets import posterior_nn
+
+from sbi_common.checkpoints import build_sbi_estimator, restore_torch
 from models.theta_transforms import scale_theta_np, unscale_theta_np
 
 def calculate_summary_statistics(x):
@@ -151,6 +154,19 @@ def run_sbi_model(model_type, train_loader, x_obs, theta_true, task, device="cpu
         # Fallback to NPE (default)
         print(f"Warning: Unknown model_type '{model_type}'. Defaulting to NPE (SNPE-C).")
         inference = NPE(prior=prior, device=device_sbi)
+
+    checkpoint_path = kwargs.get("checkpoint_path")
+    if checkpoint_path is not None:
+        net = restore_torch(
+            build_sbi_estimator(posterior_nn(model="maf"), x_obs_stats, prior),
+            checkpoint_path, device_sbi,
+        )
+        options = {"sample_with": sample_with} if sample_with is not None else {}
+        posterior = inference.build_posterior(net, **options).set_default_x(x_obs_stats)
+        samples = posterior.sample((int(n_posterior_samples),)).detach().cpu().numpy()
+        if use_scaled_theta:
+            samples = unscale_theta_np(samples, task.lower, task.upper, clip=True)
+        return (samples, posterior) if return_posterior else samples
 
     # 3. Sequential Inference Loop
     proposal = prior

@@ -78,3 +78,11 @@ def resolve_config_path(script_dir, env_var_name, cli_value=None):
             if os.path.exists(path):
                 return path, requested
     return None, requested
+
+
+def is_evaluation(config):
+    """Validate the experiment mode, defaulting to the original training workflow."""
+    mode = config.get("run_mode", "new_experiment")
+    if mode not in ("new_experiment", "evaluation"):
+        raise ValueError(f"Unknown run_mode {mode!r}; use 'new_experiment' or 'evaluation'.")
+    return mode == "evaluation"

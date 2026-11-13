@@ -69,7 +69,6 @@
     },
     "nle": {
       "eval_mode": "reload_checkpoint",
-      "checkpoint_path": "data/nle_checkpoint.pt",
       "epochs": 1,
       "mcmc_chains": 8,
       "mcmc_chain_batch_size": 4,

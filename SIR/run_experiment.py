@@ -18,6 +18,7 @@ import glob
 import json
 import os
 import sys
+import tempfile
 import time
 
 # Make the experiment package and the repository root importable regardless of cwd.
@@ -26,7 +27,8 @@ for _p in (_SCRIPT_DIR, os.path.dirname(_SCRIPT_DIR)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from sbi_common.config_utils import cli_config_arg, resolve_config_path
+from sbi_common.checkpoints import build_bayesflow_for_weights, released_weights, restore_torch
+from sbi_common.config_utils import cli_config_arg, is_evaluation, resolve_config_path
 
 if "KERAS_BACKEND" not in os.environ:
     os.environ["KERAS_BACKEND"] = "torch"
@@ -275,14 +277,12 @@ def parse_args():
     )
     parser.add_argument(
         "--output-dir", type=str,
-        default=os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "results", "calibration_expected_coverage"
-        ),
+        default=None,
     )
     parser.add_argument("--num-calibration-pairs", type=int, default=None)
     parser.add_argument("--round-size", type=int, default=None)
     parser.add_argument("--n-steps", type=int, default=None)
-    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--dataset-size", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--n-samples-posterior", type=int, default=None)
@@ -308,7 +308,7 @@ def ensure_dir(path):
     return path
 
 
-def train_models(task, train_loader, models_to_run, models_config):
+def train_models(task, train_loader, models_to_run, models_config, *, weights_dir=None):
     trained = {}
     timings = {}
 
@@ -318,6 +318,25 @@ def train_models(task, train_loader, models_to_run, models_config):
             model_conf = {"epochs": model_conf}
         epochs = int(model_conf.get("epochs", 50))
         summary_dim = int(model_conf.get("summary_dim", 8))
+
+        if weights_dir is not None:
+            path = weights_dir / model_name / f"{model_name}_sir_initial.pt"
+            if model_name in ("smmd", "mmd"):
+                cls = SMMD_Model if model_name == "smmd" else MMD_Model
+                model = restore_torch(cls(summary_dim=summary_dim, d=d, d_x=d_x, n=task.n_obs), path, DEVICE)
+            elif model_name == "dnnabc":
+                model = restore_torch(DNNABC_Model(d=d, d_x=d_x), path, DEVICE)
+            elif model_name == "bayesflow":
+                model = build_bayesflow_model(d, d_x, summary_dim=summary_dim)
+                build_bayesflow_for_weights(model, np.zeros((task.n_obs, d_x)), d)
+                path = path.with_suffix(".weights.h5")
+                model.load_weights(path)
+            else:
+                raise ValueError(f"No released SIR checkpoint for {model_name!r}.")
+            print(f"Loaded {model_name} checkpoint: {path}")
+            trained[model_name] = model
+            timings[model_name] = 0.0
+            continue
 
         print("\n" + "=" * 72)
         print(f"Training model: {model_name} | epochs={epochs}")
@@ -859,11 +878,18 @@ def main():
     config = load_config(config_path)
     calibration_config = config.get("calibration_config", {})
 
-    seed = int(args.seed)
+    evaluation = is_evaluation(config)
+    seed = int(config.get("seed", 0) if args.seed is None else args.seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    output_dir = ensure_dir(args.output_dir)
+    results_dir = "results_evaluation" if evaluation else "results"
+    output_dir = ensure_dir(
+        args.output_dir or os.path.join(_SCRIPT_DIR, results_dir, "calibration_expected_coverage")
+    )
+
+    if evaluation:
+        output_dir = tempfile.mkdtemp(prefix="run_", dir=output_dir)
 
     task = SIRTask(seed=seed)
     dataset_size = int(args.dataset_size or config.get("dataset_size", DATASET_SIZE))
@@ -896,7 +922,7 @@ def main():
     models_config = config.get("models_config", MODELS_CONFIG)
     smmd_mmd_config = config.get("smmd_mmd_config", SMMD_MMD_CONFIG)
     refinement_config = config.get("refinement_config", REFINEMENT_CONFIG)
-    resume = not args.no_resume
+    resume = not args.no_resume and not evaluation
 
     print("=" * 80)
     print("SIR expected coverage experiment")
@@ -916,16 +942,19 @@ def main():
     np.random.seed(seed)
     torch.manual_seed(seed)
     keras.utils.set_random_seed(seed)
-    theta_train = task.sample_prior(dataset_size)
-    x_train = task.simulator(theta_train)
-    dataset = TensorDataset(torch.from_numpy(x_train).float(), torch.from_numpy(theta_train).float())
-    train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    train_loader = None
+    if not evaluation:
+        theta_train = task.sample_prior(dataset_size)
+        x_train = task.simulator(theta_train)
+        dataset = TensorDataset(torch.from_numpy(x_train).float(), torch.from_numpy(theta_train).float())
+        train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
     trained_models, training_times = train_models(
         task=task,
         train_loader=train_loader,
         models_to_run=models_to_run,
         models_config=models_config,
+        weights_dir=released_weights(_SCRIPT_DIR, "sir") if evaluation else None,
     )
 
     # 2. Draw (or load cached) calibration pairs from p(theta, x) with a

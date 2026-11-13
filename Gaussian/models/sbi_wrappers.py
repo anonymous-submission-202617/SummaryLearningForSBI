@@ -13,6 +13,9 @@ except ImportError:
     # sbi <= 0.19: legacy NPE* naming.
     from sbi.inference import NPE, NPE_A, NPE_B
 from sbi.utils import BoxUniform
+from sbi.neural_nets import posterior_nn
+
+from sbi_common.checkpoints import build_sbi_estimator, restore_torch
 
 
 def calculate_summary_statistics(x):
@@ -89,6 +92,14 @@ def run_sbi_model(
             f"Warning: Unknown model_type '{model_type}'. Defaulting to NPE (SNPE-C)."
         )
         inference = NPE(prior=prior, device=device_sbi)
+
+    checkpoint_path = kwargs.get("checkpoint_path")
+    if checkpoint_path is not None:
+        builder = posterior_nn(model="maf")
+        net = restore_torch(build_sbi_estimator(builder, x_obs_stats, prior), checkpoint_path, device_sbi)
+        posterior = inference.build_posterior(net, sample_with="mcmc").set_default_x(x_obs_stats)
+        samples = posterior.sample((n_samples,), num_chains=int(kwargs.get("mcmc_chains", 20)))
+        return samples.detach().cpu().numpy()
 
     proposal = prior
 

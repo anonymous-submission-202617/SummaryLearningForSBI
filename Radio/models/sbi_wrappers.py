@@ -12,6 +12,8 @@ from sbi.inference.posteriors.direct_posterior import DirectPosterior
 from sbi.neural_nets import posterior_nn
 from sbi.utils import BoxUniform
 
+from sbi_common.checkpoints import build_sbi_estimator, restore_torch
+
 
 def _log(msg: str) -> None:
     ts = time.strftime("%H:%M:%S")
@@ -83,6 +85,7 @@ def run_npe_rs(
     cfg: dict,
     theta_train_np: Optional[np.ndarray] = None,
     x_train_np: Optional[np.ndarray] = None,
+    checkpoint_path=None,
 ) -> np.ndarray:
     mc = dict(cfg.get("models_config", {}).get("npe_rs", {}))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -124,6 +127,31 @@ def run_npe_rs(
         z_score_x="independent",
     )
 
+    x_obs_t = torch.as_tensor(np.asarray(x_obs, dtype=np.float32), device=device)
+    if x_obs_t.ndim == 1:
+        x_obs_t = x_obs_t[None, None, :]
+    if x_obs_t.ndim == 2:
+        x_obs_t = x_obs_t[None, :, :]
+
+    if checkpoint_path is not None:
+        net = restore_torch(build_sbi_estimator(build_nn, x_obs_t, prior), checkpoint_path, device)
+    else:
+        net = train_npe_rs(
+            task, prior, build_nn, x_obs_t, theta_train_np, x_train_np, device,
+            num_simulations, batch_size, lr, max_epochs, val_frac, stop_after, beta, distance,
+        )
+
+    posterior = DirectPosterior(posterior_estimator=net, prior=prior_for_sampling, device=device, x_shape=x_obs_t.shape[1:])
+    n_post = int(cfg.get("n_samples_posterior", 1000))
+    with torch.no_grad():
+        theta_post = posterior.sample((n_post,), x=x_obs_t, show_progress_bars=False)
+    return theta_post.detach().cpu().numpy().astype(np.float32)
+
+
+def train_npe_rs(
+    task, prior, build_nn, x_obs_t, theta_train_np, x_train_np, device,
+    num_simulations, batch_size, lr, max_epochs, val_frac, stop_after, beta, distance,
+):
     if theta_train_np is not None and x_train_np is not None:
         theta_np = np.asarray(theta_train_np, dtype=np.float32)[:num_simulations]
         x_np = np.asarray(x_train_np, dtype=np.float32)[:num_simulations]
@@ -152,12 +180,6 @@ def run_npe_rs(
         p.requires_grad_(True)
 
     opt = torch.optim.Adam(net.parameters(), lr=lr)
-
-    x_obs_t = torch.as_tensor(np.asarray(x_obs, dtype=np.float32), device=device)
-    if x_obs_t.ndim == 1:
-        x_obs_t = x_obs_t[None, None, :]
-    if x_obs_t.ndim == 2:
-        x_obs_t = x_obs_t[None, :, :]
 
     best_val = float("inf")
     bad_epochs = 0
@@ -229,8 +251,4 @@ def run_npe_rs(
                 _log(f"NPE-RS early stop at epoch {ep + 1}/{max_epochs} | best_val={best_val:.6f}")
                 break
 
-    posterior = DirectPosterior(posterior_estimator=net, prior=prior_for_sampling, device=device, x_shape=x_obs_t.shape[1:])
-    n_post = int(cfg.get("n_samples_posterior", 1000))
-    with torch.no_grad():
-        theta_post = posterior.sample((n_post,), x=x_obs_t, show_progress_bars=False)
-    return theta_post.detach().cpu().numpy().astype(np.float32)
+    return net

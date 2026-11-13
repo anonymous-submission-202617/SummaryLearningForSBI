@@ -27,12 +27,15 @@ for _p in (_SCRIPT_DIR, os.path.dirname(_SCRIPT_DIR)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+os.environ.setdefault("KERAS_BACKEND", "torch")
+
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
 
-from sbi_common.config_utils import resolve_config_path
+from sbi_common.checkpoints import build_bayesflow_for_weights, released_weights, restore_torch
+from sbi_common.config_utils import is_evaluation, resolve_config_path
 from data_generation import load_task
 from models.smmd import SMMD_Model, sliced_mmd_loss
 from models.dnnabc import DNNABC_Model, train_dnnabc, abc_rejection_sampling
@@ -360,7 +363,15 @@ def main():
             f"Config file not found (requested: {_requested_cfg or 'config.json'})."
         )
     cfg = load_config(cfg_path)
-    task, x_obs_mat = load_task(str(project_root), config_path=str(cfg_path))
+    evaluation = is_evaluation(cfg)
+    weights_dir = released_weights(project_root, "radio")
+    task, x_obs_mat = load_task(
+        str(project_root), config_path=str(cfg_path),
+        observation_path=weights_dir / "data" / "turin_obs.npy" if evaluation else None,
+    )
+    if evaluation and "bayesflow" in cfg.get("models_to_run", ["bayesflow"]):
+        with (project_root / "bayesflow_training_seeds.json").open() as f:
+            bayesflow_training_seeds = json.load(f)
     x_obs_mat = np.asarray(x_obs_mat, dtype=np.float32)[: int(task.N_rx), : int(task.Ns)]
     x_obs_mean = np.mean(x_obs_mat, axis=0).astype(np.float32)
     n_time_steps = int(task.Ns)
@@ -373,7 +384,8 @@ def main():
     base_seed = int(cfg.get("seed", 0))
     # Results are written next to the script (cwd-independent), or to the
     # directory requested via RADIO_RESULTS_DIR (used e.g. for smoke tests).
-    results_root = Path(os.environ.get("RADIO_RESULTS_DIR", str(project_root / "results")))
+    results_dir = "results_evaluation" if evaluation else "results"
+    results_root = Path(os.environ.get("RADIO_RESULTS_DIR", str(project_root / results_dir)))
     results_root.mkdir(parents=True, exist_ok=True)
     rmse_rows_all: list[dict] = []
     for r in range(int(n_rounds)):
@@ -398,23 +410,24 @@ def main():
         lr = float(cfg.get("learning_rate", 1e-3))
         n_samples_posterior = int(cfg.get("n_samples_posterior", 1000))
 
-        _log(f"Generating training data | dataset_size={dataset_size} ...")
-        theta_train = task.sample_prior(dataset_size)
-        # Simulate in chunks with progress logging (simulator is the bottleneck)
-        sim_chunk_size = 1000
-        x_chunks = []
-        for ch_start in range(0, dataset_size, sim_chunk_size):
-            ch_end = min(dataset_size, ch_start + sim_chunk_size)
-            x_chunk = task.simulator(theta_train[ch_start:ch_end])
-            x_chunks.append(x_chunk)
-            _log(f"  Simulated {ch_end}/{dataset_size} samples")
-        x_train = np.concatenate(x_chunks, axis=0)
-        _log(f"Generated dataset: theta {theta_train.shape} | x {x_train.shape}")
+        if not evaluation:
+            _log(f"Generating training data | dataset_size={dataset_size} ...")
+            theta_train = task.sample_prior(dataset_size)
+            # Simulate in chunks with progress logging (simulator is the bottleneck)
+            sim_chunk_size = 1000
+            x_chunks = []
+            for ch_start in range(0, dataset_size, sim_chunk_size):
+                ch_end = min(dataset_size, ch_start + sim_chunk_size)
+                x_chunk = task.simulator(theta_train[ch_start:ch_end])
+                x_chunks.append(x_chunk)
+                _log(f"  Simulated {ch_end}/{dataset_size} samples")
+            x_train = np.concatenate(x_chunks, axis=0)
+            _log(f"Generated dataset: theta {theta_train.shape} | x {x_train.shape}")
 
-        train_loader = make_dataloader(x_train, theta_train, batch_size=batch_size, shuffle=True)
-        theta_mean = np.mean(theta_train, axis=0).astype(np.float32)
-        theta_std = np.std(theta_train, axis=0).astype(np.float32)
-        theta_std = np.maximum(theta_std, 1e-12).astype(np.float32)
+            train_loader = make_dataloader(x_train, theta_train, batch_size=batch_size, shuffle=True)
+            theta_mean = np.mean(theta_train, axis=0).astype(np.float32)
+            theta_std = np.std(theta_train, axis=0).astype(np.float32)
+            theta_std = np.maximum(theta_std, 1e-12).astype(np.float32)
 
         models_to_run = list(cfg.get("models_to_run", ["smmd", "bayesflow", "dnnabc", "npe_rs"]))
         allowed = {"smmd", "bayesflow", "dnnabc", "npe_rs"}
@@ -451,34 +464,39 @@ def main():
         }
 
         for model_name in models_to_run:
+            checkpoint = weights_dir / model_name / f"{model_name}_radio_seed{round_seed:02d}"
             _log(f"========== Running model: {model_name.upper()} ==========")
 
             if model_name == "smmd":
                 mc = models_config.get("smmd", {})
                 model = SMMD_Model(summary_dim=int(mc.get("summary_dim", 16)), d=task.d, d_x=1, n=n_realizations)
-                model.set_theta_standardizer(theta_mean, theta_std)
-                model = train_smmd_mmd(
-                    model,
-                    train_loader,
-                    epochs=int(mc.get("epochs", 200)),
-                    lr=lr,
-                    model_type="smmd",
-                    m=m,
-                    num_slices=num_slices,
-                    n_time_steps=n_time_steps,
-                    device=device,
-                    generator_l1=float(cfg.get("generator_l1", 1e-6)),
-                )
+                if evaluation:
+                    model.set_theta_standardizer(np.zeros(task.d), np.ones(task.d))
+                    restore_torch(model, checkpoint.with_suffix(".pt"), device)
+                else:
+                    model.set_theta_standardizer(theta_mean, theta_std)
+                    model = train_smmd_mmd(
+                        model,
+                        train_loader,
+                        epochs=int(mc.get("epochs", 200)),
+                        lr=lr,
+                        model_type="smmd",
+                        m=m,
+                        num_slices=num_slices,
+                        n_time_steps=n_time_steps,
+                        device=device,
+                        generator_l1=float(cfg.get("generator_l1", 1e-6)),
+                    )
 
-                with torch.no_grad():
-                    stats_fn = model.compute_stats if hasattr(model, "compute_stats") else model.T
-                    n_pair = int(min(2000, x_train.shape[0]))
-                    idx = np.random.choice(x_train.shape[0], size=n_pair, replace=False)
-                    x_batch = torch.from_numpy(x_train[idx]).float().to(device)
-                    stats_sim = stats_fn(x_batch).detach().cpu().numpy()
-                    x_obs_t = torch.from_numpy(x_obs_mat[None, :, :]).float().to(device)
-                    stats_obs = stats_fn(x_obs_t).detach().cpu().numpy().reshape(-1)
-                plot_summary_pairwise(stats_sim, stats_obs, result_base / "smmd_summary_pairwise.png", max_dim=8)
+                    with torch.no_grad():
+                        stats_fn = model.compute_stats if hasattr(model, "compute_stats") else model.T
+                        n_pair = int(min(2000, x_train.shape[0]))
+                        idx = np.random.choice(x_train.shape[0], size=n_pair, replace=False)
+                        x_batch = torch.from_numpy(x_train[idx]).float().to(device)
+                        stats_sim = stats_fn(x_batch).detach().cpu().numpy()
+                        x_obs_t = torch.from_numpy(x_obs_mat[None, :, :]).float().to(device)
+                        stats_obs = stats_fn(x_obs_t).detach().cpu().numpy().reshape(-1)
+                    plot_summary_pairwise(stats_sim, stats_obs, result_base / "smmd_summary_pairwise.png", max_dim=8)
 
                 theta_post = filter_valid(task, sample_theta_smmd(model, x_obs_mat, n_samples_posterior, task=task))
                 sims = task.simulator(theta_post[:n_samples_posterior], n_rx=1).mean(axis=1)
@@ -538,40 +556,60 @@ def main():
 
             elif model_name == "bayesflow":
                 mc = models_config.get("bayesflow", {})
-                model = train_bayesflow(
-                    train_loader,
-                    epochs=int(mc.get("epochs", 200)),
-                    lr=lr,
-                    d=task.d,
-                    d_x=1,
-                    summary_dim=int(mc.get("summary_dim", 16)),
-                    theta_mean=theta_mean,
-                    theta_std=theta_std,
-                )
+                if evaluation:
+                    from models.bayesflow_net import build_bayesflow_model
 
-                def _bf_to_numpy(v):
-                    if isinstance(v, np.ndarray):
-                        return v
-                    if hasattr(v, "detach"):
-                        return v.detach().cpu().numpy()
-                    if hasattr(v, "numpy"):
-                        return v.numpy()
-                    return np.asarray(v)
-
-                try:
-                    n_pair = int(min(2000, x_train.shape[0]))
-                    idx = np.random.choice(x_train.shape[0], size=n_pair, replace=False)
-                    stats_sim = _bf_to_numpy(model.summary_network(np.asarray(x_train[idx], dtype=np.float32)))
-                    obs_in = np.asarray(x_obs_mat[None, :, :], dtype=np.float32)
-                    stats_obs = _bf_to_numpy(model.summary_network(obs_in))
-                    plot_summary_pairwise(
-                        np.asarray(stats_sim, dtype=np.float32),
-                        np.asarray(stats_obs, dtype=np.float32).reshape(-1),
-                        result_base / "bayesflow_summary_pairwise.png",
-                        max_dim=8,
+                    # The archive stores network weights only. Recreate the
+                    # parameter scaling using the original training prior draws.
+                    rng_state = np.random.get_state()
+                    try:
+                        np.random.seed(bayesflow_training_seeds[str(round_seed)])
+                        theta = task.sample_prior(19200)
+                    finally:
+                        np.random.set_state(rng_state)
+                    model = build_bayesflow_model(
+                        task.d, 1, summary_dim=int(mc.get("summary_dim", 16)),
+                        theta_mean=theta.mean(axis=0), theta_std=np.maximum(theta.std(axis=0), 1e-12),
+                        standardize=None,
                     )
-                except Exception as e:
-                    _log(f"Skipped BayesFlow summary pairwise plot due to error: {e}")
+                    build_bayesflow_for_weights(model, x_obs_mat, task.d)
+                    with np.load(checkpoint.with_name(checkpoint.name + "_weights.npz")) as archive:
+                        model.set_weights([archive[f"arr_{i}"] for i in range(len(archive.files))])
+                else:
+                    model = train_bayesflow(
+                        train_loader,
+                        epochs=int(mc.get("epochs", 200)),
+                        lr=lr,
+                        d=task.d,
+                        d_x=1,
+                        summary_dim=int(mc.get("summary_dim", 16)),
+                        theta_mean=theta_mean,
+                        theta_std=theta_std,
+                    )
+
+                    def _bf_to_numpy(v):
+                        if isinstance(v, np.ndarray):
+                            return v
+                        if hasattr(v, "detach"):
+                            return v.detach().cpu().numpy()
+                        if hasattr(v, "numpy"):
+                            return v.numpy()
+                        return np.asarray(v)
+
+                    try:
+                        n_pair = int(min(2000, x_train.shape[0]))
+                        idx = np.random.choice(x_train.shape[0], size=n_pair, replace=False)
+                        stats_sim = _bf_to_numpy(model.summary_network(np.asarray(x_train[idx], dtype=np.float32)))
+                        obs_in = np.asarray(x_obs_mat[None, :, :], dtype=np.float32)
+                        stats_obs = _bf_to_numpy(model.summary_network(obs_in))
+                        plot_summary_pairwise(
+                            np.asarray(stats_sim, dtype=np.float32),
+                            np.asarray(stats_obs, dtype=np.float32).reshape(-1),
+                            result_base / "bayesflow_summary_pairwise.png",
+                            max_dim=8,
+                        )
+                    except Exception as e:
+                        _log(f"Skipped BayesFlow summary pairwise plot due to error: {e}")
 
                 theta_post = filter_valid(task, sample_theta_bayesflow(model, x_obs_mat, n_samples_posterior, task=task))
                 sims = task.simulator(theta_post[:n_samples_posterior], n_rx=1).mean(axis=1)
@@ -632,7 +670,10 @@ def main():
             elif model_name == "dnnabc":
                 mc = models_config.get("dnnabc", {})
                 model = DNNABC_Model(d=task.d, d_x=1)
-                train_dnnabc(model, train_loader, epochs=int(mc.get("epochs", 200)), device=device)
+                if evaluation:
+                    restore_torch(model, checkpoint.with_suffix(".pt"), device)
+                else:
+                    train_dnnabc(model, train_loader, epochs=int(mc.get("epochs", 200)), device=device)
                 theta_post = abc_rejection_sampling(
                     model,
                     x_obs_mat,
@@ -673,8 +714,9 @@ def main():
                     task=task,
                     x_obs=x_obs_mat,
                     cfg=cfg,
-                    theta_train_np=theta_train,
-                    x_train_np=x_train,
+                    theta_train_np=None if evaluation else theta_train,
+                    x_train_np=None if evaluation else x_train,
+                    checkpoint_path=checkpoint.with_name(checkpoint.name + "_posterior_estimator.pt") if evaluation else None,
                 )
                 theta_post = filter_valid(task, theta_post)
                 sims = task.simulator(theta_post[:n_samples_posterior], n_rx=1).mean(axis=1)

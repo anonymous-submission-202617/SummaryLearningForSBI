@@ -137,8 +137,8 @@ def build_parser(nle_cfg: Dict[str, Any]) -> argparse.ArgumentParser:
                         default=cfg_get("slice_init_width", 0.01))
     parser.add_argument("--slice-reference-n", type=float,
                         default=cfg_get("slice_reference_n", 50.0))
-    parser.add_argument("--checkpoint-path", default=os.path.join("data", "nle_checkpoint.pt"),
-                        help="Where to save the trained NLE checkpoint.")
+    parser.add_argument("--checkpoint-path", default=None,
+                        help="Save the checkpoint here (default: nle_checkpoint.pt under the output artifacts directory).")
     parser.add_argument("--output-dir", default="results/nle_singleobs_train",
                         help="Directory for artifacts (training data, run config, reload check).")
     parser.add_argument("--validate-n-pairs", type=int, default=1024,
@@ -211,14 +211,15 @@ def main() -> None:
     train_n_obs = int(args.train_n_obs)
     task = GaussianTask(n=train_n_obs)
 
-    checkpoint_path = Path(args.checkpoint_path)
-    if not checkpoint_path.is_absolute():
-        checkpoint_path = (Path(_SCRIPT_DIR) / args.checkpoint_path).resolve()
-    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-
     output_dir = (Path(_SCRIPT_DIR) / args.output_dir).resolve()
     artifacts_dir = output_dir / "artifacts"
     artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.checkpoint_path:
+        checkpoint_path = (Path(_SCRIPT_DIR) / args.checkpoint_path).resolve()
+    else:
+        checkpoint_path = artifacts_dir / "nle_checkpoint.pt"
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
 
     print("=== Step 1: Generate single-observation training data (uniform prior) ===")
     theta_train, x_train = generate_dataset(
@@ -333,8 +334,8 @@ def main() -> None:
 
     print(f"\nDone. Checkpoint saved to: {checkpoint_path}")
     print(
-        "Run the Gaussian main experiment with nle eval_mode='reload_checkpoint' "
-        "(the default in config.json) to evaluate this model."
+        "To use this checkpoint in new_experiment mode, set "
+        f"models_config.nle.checkpoint_path to {checkpoint_path} in the Gaussian config."
     )
 
 

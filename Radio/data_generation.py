@@ -250,7 +250,7 @@ class RadioTask:
         return _simulate_turin_batch_torch(theta, self.Ns, n_rx_eff, self.B, tau0=float(self.tau0))
 
 
-def load_task(project_root: str, config_path: Optional[str] = None) -> Tuple[RadioTask, np.ndarray]:
+def load_task(project_root: str, config_path: Optional[str] = None, *, observation_path=None) -> Tuple[RadioTask, np.ndarray]:
     cfg_path = config_path or os.path.join(project_root, "config.json")
     cfg = load_config(cfg_path) if os.path.exists(cfg_path) else {}
     ns = int(cfg.get("Ns", 801))
@@ -268,7 +268,7 @@ def load_task(project_root: str, config_path: Optional[str] = None) -> Tuple[Rad
         prior_lower=prior_lower,
         prior_upper=prior_upper,
     )
-    obs_path = os.path.join(project_root, "data", "turin_obs.npy")
+    obs_path = observation_path or os.path.join(project_root, "data", "turin_obs.npy")
     if not os.path.exists(obs_path):
         raise FileNotFoundError(f"Missing observed data at {obs_path}")
     obs = np.load(obs_path).astype(np.float32)

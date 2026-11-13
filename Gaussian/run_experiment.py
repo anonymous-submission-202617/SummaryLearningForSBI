@@ -42,7 +42,8 @@ if "KERAS_BACKEND" not in os.environ:
 import keras
 
 # Import from local modules
-from sbi_common.config_utils import cli_config_arg, resolve_config_path
+from sbi_common.checkpoints import released_weights, restore_torch
+from sbi_common.config_utils import cli_config_arg, is_evaluation, resolve_config_path
 from data_generation import GaussianTask, generate_dataset, TRUE_PARAMS, d, d_x, p
 from models.smmd import SMMD_Model, sliced_mmd_loss
 from models.mmd import MMD_Model, mmd_loss
@@ -325,11 +326,9 @@ mc.setdefault("slice_init_width", 0.01)
 mc.setdefault("slice_reference_n", 50.0)
 mc.setdefault("seed", 0)
 mc.setdefault("eval_mode", "reload_checkpoint")
-mc.setdefault("checkpoint_path", os.path.join("data", "nle_checkpoint.pt"))
 
 mc = MODELS_CONFIG.setdefault("td_npse", {})
 mc.setdefault("eval_mode", "reload_checkpoint")
-mc.setdefault("checkpoint_path", os.path.join("data", "td_npse_checkpoint.pt"))
 mc.setdefault("epochs", 600)
 mc.setdefault("learning_rate", 1e-4)
 mc.setdefault("hidden_dim", 256)
@@ -387,28 +386,26 @@ def resolve_model_config(model_type):
     return None
 
 
-def _resolve_checkpoint_path(cfg):
-    """Resolve a model checkpoint path configured in ``cfg`` to an existing file.
-
-    Returns ``None`` when no path is configured or the file is not found.
-    """
-    requested = str(cfg.get("checkpoint_path", "") or "").strip()
-    if not requested:
-        return None
-    candidates = []
-    if os.path.isabs(requested):
-        candidates.append(requested)
+def _resolve_checkpoint_path(cfg, model_type, *, evaluation):
+    """Find a Gaussian baseline checkpoint or report the expected path."""
+    bundled_path = (
+        released_weights(_SCRIPT_DIR, "gaussian")
+        / "nle_and_td_npse"
+        / f"{model_type}_checkpoint.pt"
+    )
+    requested = str(cfg.get("checkpoint_path") or "").strip()
+    if evaluation or not requested:
+        candidates = [bundled_path]
+    elif os.path.isabs(requested):
+        candidates = [requested]
     else:
-        candidates.append(os.path.join(os.getcwd(), requested))
-        candidates.append(os.path.join(SCRIPT_DIR, requested))
+        candidates = [os.path.join(path, requested) for path in (os.getcwd(), SCRIPT_DIR)]
         candidates.append(os.path.join(SCRIPT_DIR, os.path.basename(requested)))
-    seen = set()
+
     for path in candidates:
-        if path and path not in seen:
-            seen.add(path)
-            if os.path.exists(path):
-                return path
-    return None
+        if os.path.isfile(path):
+            return path
+    raise FileNotFoundError(f"Missing {model_type} checkpoint. Looked in: {', '.join(map(str, candidates))}")
 
 
 def _load_td_npse_checkpoint_for_eval(checkpoint_path, device):
@@ -1234,6 +1231,7 @@ def run_single_experiment(
     n_obs=n,
     initial_training_data=None,
     true_posterior_samples=None,
+    weights_dir=None,
 ):
     """
     Runs a single experiment for a specific model type.
@@ -1259,7 +1257,39 @@ def run_single_experiment(
 
     t_start_total = time.time()
 
-    if model_type == "smmd":
+    evaluation = weights_dir is not None
+    if evaluation and model_type in {"smmd", "mmd", "bayesflow", "dnnabc", "npe", "snpe", "snpe_c"}:
+        name = "snpe_c" if model_type in {"npe", "snpe", "snpe_c"} else model_type
+        path = weights_dir / f"n{n_obs}" / name / f"{name}_n{n_obs}_seed{round_id - 1:02d}"
+        summary_dim = model_cfg.get("summary_dim", 10)
+        if name in {"smmd", "mmd"}:
+            cls = SMMD_Model if name == "smmd" else MMD_Model
+            model = restore_torch(cls(summary_dim=summary_dim, d=d, d_x=d_x, n=n_obs), path.with_suffix(".pt"), device)
+        elif name == "dnnabc":
+            model = restore_torch(DNNABC_Model(d=d, d_x=d_x), path.with_suffix(".pt"), device)
+        elif name == "bayesflow":
+            # Build the split flow before attaching Keras' enclosing model scope.
+            keras.backend.clear_session()
+            keras.utils.set_random_seed(round_id - 1)
+            model = build_bayesflow_model(d, d_x, summary_dim=summary_dim)
+            x = np.asarray(x_obs, dtype=np.float32)[None, ...]
+            with torch.no_grad():
+                summary = model.summary_network(x)
+                model.inference_network.log_prob(torch.zeros((1, d)), conditions=summary)
+                model.build({"summary_variables": x.shape, "inference_variables": (1, d)})
+            model.summary_network.load_weights(path.with_name(path.name + "_summary.weights.h5"))
+            model.inference_network.load_state_dict(
+                torch.load(path.with_name(path.name + "_inference.pt"), map_location="cpu", weights_only=True)
+            )
+        else:
+            posterior_samples = run_sbi_model(
+                model_type, None, x_obs, theta_true, task, device=str(device),
+                n_samples=N_SAMPLES_POSTERIOR, mcmc_chains=model_cfg.get("mcmc_chains", 20),
+                checkpoint_path=path.with_name(path.name + "_posterior_estimator.pt"),
+            )
+    elif evaluation and model_type not in {"nle", "td_npse", "w2abc"}:
+        raise ValueError(f"No released Gaussian checkpoint for {model_type!r}.")
+    elif model_type == "smmd":
         summary_dim = model_cfg.get("summary_dim", 10)
         lr = model_cfg.get("learning_rate", LEARNING_RATE)
         model = SMMD_Model(summary_dim=summary_dim, d=d, d_x=d_x, n=n_obs)
@@ -1303,13 +1333,8 @@ def run_single_experiment(
     elif model_type == "nle":
         nle_cfg = MODELS_CONFIG.get(model_type, {})
         nle_eval_mode = str(nle_cfg.get("eval_mode", "reload_checkpoint")).lower()
-        if nle_eval_mode == "reload_checkpoint":
-            checkpoint_path = _resolve_checkpoint_path(nle_cfg)
-            if checkpoint_path is None:
-                raise FileNotFoundError(
-                    "NLE eval_mode='reload_checkpoint' but checkpoint_path was not found. "
-                    f"Configured path: {nle_cfg.get('checkpoint_path')!r}"
-                )
+        if evaluation or nle_eval_mode == "reload_checkpoint":
+            checkpoint_path = _resolve_checkpoint_path(nle_cfg, model_type, evaluation=evaluation)
             print(f"Reloading NLE checkpoint for evaluation: {checkpoint_path}")
             model, checkpoint, training_time, checkpoint_epochs = _load_nle_checkpoint_for_eval(
                 checkpoint_path,
@@ -1381,13 +1406,8 @@ def run_single_experiment(
     elif model_type == "td_npse":
         td_cfg = MODELS_CONFIG.get(model_type, {})
         td_eval_mode = str(td_cfg.get("eval_mode", "reload_checkpoint")).lower()
-        if td_eval_mode == "reload_checkpoint":
-            checkpoint_path = _resolve_checkpoint_path(td_cfg)
-            if checkpoint_path is None:
-                raise FileNotFoundError(
-                    "TD-NPSE eval_mode='reload_checkpoint' but checkpoint_path was not found. "
-                    f"Configured path: {td_cfg.get('checkpoint_path')!r}"
-                )
+        if evaluation or td_eval_mode == "reload_checkpoint":
+            checkpoint_path = _resolve_checkpoint_path(td_cfg, model_type, evaluation=evaluation)
             print(f"Reloading TD-NPSE checkpoint for evaluation: {checkpoint_path}")
             model, checkpoint, training_time, checkpoint_epochs = _load_td_npse_checkpoint_for_eval(
                 checkpoint_path,
@@ -1717,22 +1737,87 @@ def save_model(model, model_type, round_id):
         print(f"Skipping save for {model_type} (not a torch module or bayesflow).")
 
 
+def sample_reference_posterior(x_obs, task, theta_true, round_idx):
+    print("\n=== Step 2: True Posterior Sampling ===")
+    true_samples = None
+    try:
+        X_comp = x_obs[:, 0]
+        Y_comp = x_obs[:, 1]
+        Z_comp = x_obs[:, 2]
+
+        denom = 1.0 - Z_comp
+        denom[np.abs(denom) < 1e-6] = 1e-6
+
+        x_2d = X_comp / denom
+        y_2d = Y_comp / denom
+        x_obs_2d = np.stack([x_2d, y_2d], axis=-1)
+
+        print(
+            f"Inverted 3D obs to 2D for true posterior sampling. "
+            f"Shape: {x_obs_2d.shape}"
+        )
+
+        coeff = TRUE_POSTERIOR_CONFIG.get("proposal_scale_coeff", None)
+        if coeff is not None:
+            proposal_scale = float(coeff) / float(np.sqrt(float(n)))
+        else:
+            base_scale = float(
+                TRUE_POSTERIOR_CONFIG.get("proposal_scale", 0.06)
+            )
+            ref_n = float(
+                TRUE_POSTERIOR_CONFIG.get(
+                    "proposal_scale_reference_n", 25.0
+                )
+            )
+            proposal_scale = base_scale * float(np.sqrt(ref_n / float(n)))
+        print(
+            f"True posterior MCMC proposal_scale={proposal_scale:.6g} (n_obs={n})"
+        )
+        true_samples = run_gaussian_posterior_mcmc(
+            x_obs_2d,
+            task,
+            n_draws=TRUE_POSTERIOR_CONFIG.get("n_draws", 2000),
+            n_tune_chain=TRUE_POSTERIOR_CONFIG.get("n_tune_chain", 1000),
+            chains=TRUE_POSTERIOR_CONFIG.get("chains", 30),
+            proposal_scale=proposal_scale,
+        )
+
+        print(f"True Posterior Samples Shape: {true_samples.shape}")
+        true_plot_dir = f"{RESULTS_BASE}/plots/round_{round_idx}/true_posterior"
+        plot_posterior(true_samples, theta_true, true_plot_dir, "posterior.png")
+
+        true_save_dir = (
+            f"{RESULTS_BASE}/posterior_samples/true_reference/round_{round_idx}"
+        )
+        os.makedirs(true_save_dir, exist_ok=True)
+        np.save(f"{true_save_dir}/samples.npy", true_samples)
+        print(f"Saved true posterior samples to {true_save_dir}/samples.npy")
+    except Exception as e:
+        print(f"True posterior sampling failed: {e}")
+        true_samples = None
+    return true_samples
+
+
 def main():
     global RESULTS_BASE, n
     # Reproducibility: base seed; each (n_obs, round) combination is re-seeded
     # with ``base_seed + n_obs_idx * NUM_ROUNDS + (round_idx - 1)`` so every
     # round's data generation is deterministic and independently reproducible.
     base_seed = int(CONFIG.get("seed", 0))
+    evaluation = is_evaluation(CONFIG)
+    weights_dir = released_weights(_SCRIPT_DIR, "gaussian") if evaluation else None
 
-    if SAVE_MODEL_PARAMS:
+    if SAVE_MODEL_PARAMS and not evaluation:
         os.makedirs("saved_models", exist_ok=True)
 
+    observation_counts = CONFIG.get("evaluation_n_observation_list", N_OBS_LIST) if evaluation else N_OBS_LIST
     print(f"Starting Multi-Round Experiment (Total Rounds: {NUM_ROUNDS})")
-    print(f"n_observation settings: {N_OBS_LIST}")
+    print(f"n_observation settings: {observation_counts}")
 
-    for n_obs_idx, n_curr in enumerate(N_OBS_LIST):
+    for n_obs_idx, n_curr in enumerate(observation_counts):
         n = n_curr
-        RESULTS_BASE = os.path.join(_SCRIPT_DIR, f"results_{n_curr}{RESULTS_SUFFIX}")
+        mode_suffix = "_evaluation" if evaluation else ""
+        RESULTS_BASE = os.path.join(_SCRIPT_DIR, f"results_{n_curr}{mode_suffix}{RESULTS_SUFFIX}")
         os.makedirs(RESULTS_BASE, exist_ok=True)
         _setup_terminal_log(RESULTS_BASE)
 
@@ -1742,7 +1827,7 @@ def main():
         print(f"\n******** Running experiments for n_observation = {n_curr} ********")
 
         for round_idx in range(1, NUM_ROUNDS + 1):
-            round_seed = base_seed + n_obs_idx * NUM_ROUNDS + (round_idx - 1)
+            round_seed = round_idx - 1 if evaluation else base_seed + n_obs_idx * NUM_ROUNDS + (round_idx - 1)
             np.random.seed(round_seed)
             torch.manual_seed(round_seed)
             torch.cuda.manual_seed_all(round_seed)
@@ -1750,76 +1835,31 @@ def main():
 
             print("=== Step 1: Data Generation ===")
             task = GaussianTask(n=n)
-            print(f"Generating training data (size={DATASET_SIZE}, n={n})...")
-            theta_train, x_train = generate_dataset(task, n_sims=DATASET_SIZE, n_obs=n)
+            train_loader = None
+            initial_data = None
+            if evaluation:
+                data_dir = weights_dir / f"n{n}" / "data"
+                x_obs = np.load(data_dir / f"{round_idx:02d}_obs.npy")
+                theta_true = TRUE_PARAMS.copy()
+            else:
+                print(f"Generating training data (size={DATASET_SIZE}, n={n})...")
+                theta_train, x_train = generate_dataset(task, n_sims=DATASET_SIZE, n_obs=n)
 
-            dataset = TensorDataset(
-                torch.from_numpy(x_train).float(),
-                torch.from_numpy(theta_train).float(),
-            )
-            train_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
+                dataset = TensorDataset(
+                    torch.from_numpy(x_train).float(),
+                    torch.from_numpy(theta_train).float(),
+                )
+                train_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 
-            print("Generating observation...")
-            theta_true, x_obs = task.get_ground_truth()
+                print("Generating observation...")
+                theta_true, x_obs = task.get_ground_truth()
+                initial_data = (x_train, theta_train)
             print(f"True Params: {theta_true}")
 
-            print("\n=== Step 2: True Posterior Sampling ===")
-            true_samples = None
-            try:
-                X_comp = x_obs[:, 0]
-                Y_comp = x_obs[:, 1]
-                Z_comp = x_obs[:, 2]
-
-                denom = 1.0 - Z_comp
-                denom[np.abs(denom) < 1e-6] = 1e-6
-
-                x_2d = X_comp / denom
-                y_2d = Y_comp / denom
-                x_obs_2d = np.stack([x_2d, y_2d], axis=-1)
-
-                print(
-                    f"Inverted 3D obs to 2D for true posterior sampling. "
-                    f"Shape: {x_obs_2d.shape}"
-                )
-
-                coeff = TRUE_POSTERIOR_CONFIG.get("proposal_scale_coeff", None)
-                if coeff is not None:
-                    proposal_scale = float(coeff) / float(np.sqrt(float(n)))
-                else:
-                    base_scale = float(
-                        TRUE_POSTERIOR_CONFIG.get("proposal_scale", 0.06)
-                    )
-                    ref_n = float(
-                        TRUE_POSTERIOR_CONFIG.get(
-                            "proposal_scale_reference_n", 25.0
-                        )
-                    )
-                    proposal_scale = base_scale * float(np.sqrt(ref_n / float(n)))
-                print(
-                    f"True posterior MCMC proposal_scale={proposal_scale:.6g} (n_obs={n})"
-                )
-                true_samples = run_gaussian_posterior_mcmc(
-                    x_obs_2d,
-                    task,
-                    n_draws=TRUE_POSTERIOR_CONFIG.get("n_draws", 2000),
-                    n_tune_chain=TRUE_POSTERIOR_CONFIG.get("n_tune_chain", 1000),
-                    chains=TRUE_POSTERIOR_CONFIG.get("chains", 30),
-                    proposal_scale=proposal_scale,
-                )
-
-                print(f"True Posterior Samples Shape: {true_samples.shape}")
-                true_plot_dir = f"{RESULTS_BASE}/plots/round_{round_idx}/true_posterior"
-                plot_posterior(true_samples, theta_true, true_plot_dir, "posterior.png")
-
-                true_save_dir = (
-                    f"{RESULTS_BASE}/posterior_samples/true_reference/round_{round_idx}"
-                )
-                os.makedirs(true_save_dir, exist_ok=True)
-                np.save(f"{true_save_dir}/samples.npy", true_samples)
-                print(f"Saved true posterior samples to {true_save_dir}/samples.npy")
-            except Exception as e:
-                print(f"True posterior sampling failed: {e}")
-                true_samples = None
+            if evaluation:
+                true_samples = np.load(data_dir / f"{round_idx:02d}_posterior.npy")
+            else:
+                true_samples = sample_reference_posterior(x_obs, task, theta_true, round_idx)
 
             print("\n=== Step 3: Run Model Experiments ===")
             round_samples_for_plot = {}
@@ -1836,8 +1876,6 @@ def main():
                     print(f"Warning: No config for {model_type}, skipping.")
                     continue
 
-                initial_data = (x_train, theta_train)
-
                 result = run_single_experiment(
                     model_type,
                     task,
@@ -1849,6 +1887,7 @@ def main():
                     n_obs=n,
                     initial_training_data=initial_data,
                     true_posterior_samples=true_samples,
+                    weights_dir=weights_dir,
                 )
 
                 if result is None:
@@ -1912,7 +1951,7 @@ def main():
                 else:
                     print("Skipping MMD calculation (no true posterior samples).")
 
-                if SAVE_MODEL_PARAMS:
+                if SAVE_MODEL_PARAMS and not evaluation:
                     save_model(result["model"], model_type, round_idx)
 
                 record = {

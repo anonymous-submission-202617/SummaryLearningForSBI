@@ -1,8 +1,10 @@
 {
+  "run_mode": "new_experiment",
   "n_observation": 25,
   "n_observation_list": [
     25
   ],
+  "evaluation_n_observation_list": [25],
   "dataset_size": 19200,
   "batch_size": 256,
   "learning_rate": 0.001,
@@ -70,12 +72,10 @@
       "sims_per_round": 5000
     },
     "nle": {
-      "eval_mode": "reload_checkpoint",
-      "checkpoint_path": "data/nle_checkpoint.pt"
+      "eval_mode": "reload_checkpoint"
     },
     "td_npse": {
-      "eval_mode": "reload_checkpoint",
-      "checkpoint_path": "data/td_npse_checkpoint.pt"
+      "eval_mode": "reload_checkpoint"
     }
   }
 }

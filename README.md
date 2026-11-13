@@ -1,246 +1,208 @@
 # Summary Learning for Simulation-Based Inference
 
-Code accompanying the manuscript *"Neural Estimation of Summary Statistics for
-Simulation-based Inference with Non-asymptotic Guarantees"*.
+Code accompanying the manuscript *Neural Estimation of Summary Statistics for
+Simulation-based Inference with Non-asymptotic Guarantees*. The repository
+contains the four numerical experiments, their configurations, and the
+checkpoints and data used by the evaluation scripts.
 
-This repository contains the benchmark experiments comparing several
-summary-learning / simulation-based inference (SBI) methods on four tasks:
-
-| Task | Directory | Parameter dim | Observation type |
-| --- | --- | --- | --- |
-| Gaussian (stereographic) | `Gaussian/` | 5 | deep-set observations |
-| Lotka–Volterra | `LotkaVoletrra/` | 5 | noisy time series |
-| Radio (Turin channel) | `Radio/` | 4 | impulse-response realizations |
-| SIR epidemic | `SIR/` | 2 | infection-curve time series |
+| Experiment | Directory | Parameters | Observations |
+| --- | --- | ---: | --- |
+| Gaussian | [`Gaussian/`](Gaussian/) | 5 | Stereographic Gaussian samples |
+| SIR | [`SIR/`](SIR/) | 2 | Infection time series |
+| Lotka–Volterra | [`LotkaVoletrra/`](LotkaVoletrra/) | 4 | Predator and prey time series |
+| Radio | [`Radio/`](Radio/) | 4 | Turin channel measurements |
 
 ## Methods
 
-The proposed methods are:
+The study evaluates three summary-learning variants, both before and after
+applying the local refinement strategy proposed in the manuscript.
 
-- **SMMD** — summary network + conditional generator trained with sliced
-  maximum mean discrepancy.
-- **MMD** — the same architecture trained with multi-scale MMD (V-statistic).
-- **BayesFlow** — the KL-divergence variant of the same summary-learning
-  framework (the estimator architecture follows Radev et al., 2020).
+- **SMMD** learns a summary network and a conditional posterior generator
+  jointly by minimizing sliced maximum mean discrepancy.
+- **MMD** uses the same architecture with a multiscale MMD loss.
+- **BayesFlow** is the flow-based variant in this comparison. It uses the
+  BayesFlow architecture of [Radev et al. (2022)](#references) to learn
+  summaries and an amortized posterior. We apply our local refinement
+  strategy to its learned summaries as we do for SMMD and MMD.
 
-The following existing methods are used as baselines:
+**Local refinement** starts from the amortized posterior and uses ABC-MCMC
+to refine inference for the observed dataset. The Lotka–Volterra **Refine+**
+procedure adds a sequential training stage before ABC-MCMC.
 
-- **DNN-ABC** — ABC rejection sampling with a learned (regression) summary
-  network.
-- **SNPE-C / NPE** — neural posterior estimation, with and without a summary
-  network.
-- **NLE / TD-NPSE** — observation-wise likelihood and diffusion-based posterior
-  estimators (`Gaussian/`).
-- **NPE-RS** — robust NPE variant for misspecified simulators (`Radio/`).
+The other methods used for comparison are listed below.
+
+- **DNN-ABC** uses a regression estimate of the posterior mean of the
+  parameters as the summary for ABC rejection sampling ([Jiang et al., 2017](#references)).
+- **NPE / SNPE-C** learn a conditional posterior density from simulated data
+  ([Papamakarios & Murray, 2016](#references); [Greenberg et al., 2019](#references)).
+- **NLE and TD-NPSE** are amortized methods trained on single
+  observations. NLE combines per-observation likelihood estimates, and
+  TD-NPSE combines per-observation score estimates. Each supports posterior
+  inference for varying numbers of observations without retraining
+  ([Papamakarios et al., 2019](#references); [Linhart et al., 2026](#references)).
+- **NPE-RS** learns robust summaries for neural posterior estimation under
+  model misspecification. We use it for the Radio experiment ([Huang et al., 2023](#references)).
 
 ## Reproducing the paper results
 
-All experiments below reproduce specific tables and figures in the
-"Numerical Experiments" section of the manuscript *"Neural Estimation of
-Summary Statistics for Simulation-based Inference with Non-asymptotic
-Guarantees"*. The mapping between code and paper output is:
+The table connects each script to the corresponding part of the manuscript.
+The output files contain the metrics and samples used for those comparisons.
 
-| Task directory | Manuscript subsection | Reproduces |
+| Experiment | Manuscript comparison | Main outputs |
 | --- | --- | --- |
-| `Gaussian/` | Toy Example With Multimodal Posterior | Table 1 ("Results for toy examples."): MMD and \(\sqrt{n}\times\)sW between each estimated posterior and the ground-truth posterior for \(n=25,50,100\), averaged over 10 replications. |
-| `Gaussian/DataSizeDependence/` | Toy Example With Multimodal Posterior | Figure 2 ("Sliced-Wasserstein (sW) distance between the estimated and ground-truth posteriors, as a function of the observation count \(n\) under different training sizes \(N\)"): the scaling study of SMMD vs NPE, reporting \(\sqrt{n}\times\)sW for \(N=20{,}000/30{,}000/40{,}000\) and \(n=10/75/150/225/300\), averaged over 25 test datasets. |
-| `SIR/` | SIR Model With Small Training Budget | Table 2 ("Results for SIR model."), the calibration-curves figure and the illustration of the approximate posterior before and after refinement. |
-| `LotkaVoletrra/` | Population Ecology Model With Vague Prior | Table 3 ("Results for Lotka-Volterra model.") and the figure showing posterior density plots across the stages of the Refine+ procedure. |
-| `Radio/` | Real Data Application With A Misspecified Simulator | The predictive-performance figure (amortized vs refined) and the RMSE metric reported at the end of the subsection. |
+| [Gaussian](Gaussian/run_experiment.py) | Table 1, multimodal posterior estimation for 25, 50, and 100 observations | MMD and sliced-Wasserstein distance scaled by √n against a reference posterior. Per-round metrics in `experiment_results.csv` and aggregates in `final_summary.csv`. |
+| [Gaussian training budget study](Gaussian/DataSizeDependence/run_experiment.py) | Figure 2, how SMMD and NPE accuracy varies with observation count and training budget | Per-replication and aggregate metrics in `results_raw.csv` and `results_agg.csv`, plus the scaling plot. |
+| [SIR](SIR/run_experiment.py) | Table 2, calibration with a small training budget | Coverage, interval lengths, and calibration errors in `calibration_summary.csv`. Coverage curves are based on repeated simulated parameter–observation pairs. |
+| [Lotka–Volterra](LotkaVoletrra/run_experiment.py) | Table 3, population ecology under a vague prior | Bias, interval length, and coverage in `final_summary.csv`, with posterior samples and comparisons across the Refine+ stages. |
+| [Radio](Radio/run_experiment.py) | Predictive performance with a misspecified simulator | Posterior predictive curves and predictive RMSE. Aggregate metrics are in `rmse_summary_stats.csv`. |
 
-The exact output files and directories produced by each experiment (metrics
-tables, posterior samples, plots and logs) are listed in the
-`## Outputs` section of the corresponding task README.
+The main experiments follow different evaluation protocols:
 
-More detail on each experiment:
+- **Gaussian** compares the estimated and reference posteriors on each
+  observation set. The training budget study varies both the number of
+  simulations used to fit the models and the number of observations supplied
+  at inference time.
+- **SIR** uses a single fit per method across simulated calibration pairs.
+  For each pair, the runner checks whether posterior credible intervals
+  contain the simulated parameter values.
+- **Lotka–Volterra** evaluates the amortized posterior and the Refine+
+  posterior. Refine+ trains on a mixture of simulations from the prior and
+  the current posterior before applying ABC-MCMC.
+- **Radio** compares posterior predictive simulations with the measured Turin
+  channel data. Predictive RMSE includes the discrepancy between the mean
+  predicted curve and the mean measured curve.
 
-- **`Gaussian/` — toy example with multimodal posterior.** SMMD, MMD,
-  BayesFlow, DNN-ABC and SNPE-C at observation counts `n = 25, 50, 100`,
-  with local refinement for SMMD / MMD / BayesFlow. NLE and TD-NPSE are
-  trained once on a large single-observation dataset (50,000 pairs, uniform
-  prior) by standalone scripts; the main experiment loads their checkpoints
-  and only performs posterior inference and metric evaluation (no per-round
-  training or local refinement).
-  - `Gaussian/run_nle_singleobs_train.py` — auxiliary: trains the NLE
-    model and exports `data/nle_checkpoint.pt`.
-  - `Gaussian/run_td_npse_singleobs_train_pairplots.py` — auxiliary:
-    TD-NPSE training and pairplot diagnostics (the `pairplots` suffix refers
-    to the posterior-comparison figures it draws after training; see the
-    `Gaussian/README.md` for details).
-  - `Gaussian/DataSizeDependence/` — scaling study: SMMD vs NPE across
-    training budgets (`N = 20,000 / 30,000 / 40,000`) and observation
-    counts (`n = 10 / 75 / 150 / 225 / 300`), studying how the estimation
-    error scales with the observation count under different training
-    budgets.
-- **`SIR/` — epidemic calibration experiment.** SMMD, MMD, BayesFlow and
-  DNN-ABC under a simulation-based calibration protocol, with local
-  refinement.
-- **`LotkaVoletrra/` — population-ecology model with vague prior.** SMMD, MMD
-  and BayesFlow (Refine+), plus the DNN-ABC and SNPE-C baselines.
-- **`Radio/` — real data with a misspecified simulator.** SMMD, MMD,
-  BayesFlow, DNN-ABC and NPE-RS.
+Evaluation recomputes metrics from the supplied artifacts. Reported means use
+the replications completed in each run, and stochastic sampling can introduce
+numerical variation.
+
+Additional scripts train the Gaussian [NLE](Gaussian/run_nle_singleobs_train.py)
+and [TD-NPSE](Gaussian/run_td_npse_singleobs_train_pairplots.py) models.
+Task-specific instructions are available for [Gaussian](Gaussian/README.md),
+[SIR](SIR/README.md), [Lotka–Volterra](LotkaVoletrra/README.md), and
+[Radio](Radio/README.md).
 
 ## Repository layout
 
-```
+```text
 .
-├── sbi_common/            # Shared losses, networks and ABC helpers
-├── Gaussian/              # Gaussian task
-│   └── DataSizeDependence/  # scaling study (SMMD vs NPE)
-├── LotkaVoletrra/         # Lotka-Volterra task
-├── Radio/                 # Radio (Turin) task
-├── SIR/                   # SIR task
-├── environment/           # Conda / pip environment files
-├── tests/                 # Numerical equivalence and smoke tests
-└── pyproject.toml
+├── Gaussian/
+│   └── DataSizeDependence/
+├── SIR/
+├── LotkaVoletrra/
+├── Radio/
+├── WEIGHTS/       # Model checkpoints and evaluation data
+├── sbi_common/    # Shared losses, network components, and ABC helpers
+├── environment/   # Pinned environments
+└── tests/         # Unit tests
 ```
 
-Each task directory contains:
-
-- `data_generation.py` — simulator, prior and task class;
-- `run_experiment.py` — training, refinement and metric evaluation entry point;
-- `config.json` — experiment configuration (dataset size, epochs, model hyper-parameters);
-- `models/` — per-task network definitions (thin wrappers over `sbi_common` where shared);
-- `utilities.py` — task-specific MCMC refinement and evaluation helpers;
-
-`Gaussian/` additionally contains the standalone NLE / TD-NPSE training
-scripts (`run_nle_singleobs_train.py`,
-`run_td_npse_singleobs_train_pairplots.py`) and the released checkpoints
-under `data/` (see "Running an experiment" below).
-
-The `models/` subdirectory holds the network definitions used by the task:
-`smmd.py`, `mmd.py`, `bayesflow_net.py` and `dnnabc.py` implement the
-summary-network / posterior-estimator building blocks of the corresponding
-methods, and `sbi_wrappers.py` is a thin wrapper around the `sbi` package
-used to train and sample the SNPE-C / NPE methods. It appears in
-`Gaussian/` (also used by the `DataSizeDependence/` sub-experiment),
-`LotkaVoletrra/` and `Radio/` (where it additionally implements the NPE-RS
-baseline); `SIR/` does not use SNPE-C/NPE and contains no wrapper.
+Each task directory contains its own `config.json`, `run_experiment.py`,
+simulator in `data_generation.py`, and model definitions in `models/`.
+Task-specific metrics and refinement utilities live in `utilities.py`.
 
 ## Installation
 
-The experiments run with **Python 3.13**. All package versions are pinned in
-`environment/environment.yml` (Conda) and `environment/requirements.txt`
-(pip); the key packages are **PyTorch 2.10**, **sbi 0.26.1** (SNPE-C / NPE),
-**BayesFlow 2.0.8**, **pyABC 0.12.16** and **POT 0.9.6** (sliced-Wasserstein
-metric). Software central to the methods is cited in the manuscript's
-References section (e.g., BayesFlow); see also `environment/README.md`.
+The environment uses Python 3.13. Choose one of the following installation
+options from the repository root.
 
-### Option 1 — Conda
+### Conda
 
 ```bash
 conda env create -f environment/environment.yml
 conda activate sbi-summary
 ```
 
-### Option 2 — pip
+### pip
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv
+source .venv/bin/activate
 pip install -r environment/requirements.txt
 ```
 
-On NVIDIA GPUs, install the matching CUDA build of PyTorch before the other
-packages (the experiments were run on Linux with CUDA 12.8).
+The pinned versions are listed in
+[`environment/environment.yml`](environment/environment.yml) and
+[`environment/requirements.txt`](environment/requirements.txt). See the
+[environment notes](environment/README.md) for platform and GPU setup.
 
-## Running an experiment
+The implementation uses **BayesFlow 2.0.8** for the BayesFlow models and
+**sbi 0.26.1** for neural density estimation and posterior sampling.
+Their software references are listed separately from the method papers
+[below](#references).
 
-From the repository root:
+## Run the experiments
+
+Run the task you want from the repository root.
 
 ```bash
-python -m Gaussian.run_experiment                     # default config
-python -m SIR.run_experiment --config SIR/config.json
+# Gaussian defaults to n = 25. For n = 50 or 100, see the config settings below.
+python -m Gaussian.run_experiment --config Gaussian/config.json
+python -m SIR.run_experiment
+python -m LotkaVoletrra.run_experiment
+python -m Radio.run_experiment
 ```
 
-or from inside a task directory (equivalent):
+Set `run_mode` in the task's `config.json` to select the workflow.
 
-```bash
-cd Gaussian && python run_experiment.py
-cd SIR && python run_experiment.py --config config.json
-```
+| Mode | Workflow |
+| --- | --- |
+| `new_experiment` (default) | Generate data and run the training and evaluation workflow. |
+| `evaluation` | Load the supplied checkpoints and data from [`WEIGHTS/`](WEIGHTS/) and run the task's inference, refinement, and evaluation stages as applicable. |
 
-Sub-experiments are run in the same way:
+For Gaussian at `n = 50` or `n = 100`, copy `Gaussian/config.json` and set
+`n_observation` and `n_observation_list` to `50` and `[50]`, or `100` and
+`[100]`, for `new_experiment`. For `evaluation`, set
+`evaluation_n_observation_list` to `[50]` or `[100]`. Pass the modified file
+with `--config PATH`.
+
+The Gaussian training budget study has its own entry point and configuration.
 
 ```bash
 python Gaussian/DataSizeDependence/run_experiment.py --config Gaussian/DataSizeDependence/config.json
 ```
 
-The pretrained NLE and TD-NPSE checkpoints are included in the repository
-under `Gaussian/data/`, so the main experiment runs out of the box.  To
-retrain them from scratch instead (only required once per dataset):
-
-```bash
-python Gaussian/run_nle_singleobs_train.py --n-train 50000 --epochs 500
-python Gaussian/run_td_npse_singleobs_train_pairplots.py --n-train 50000
-```
-
-The Gaussian main experiment then reloads these checkpoints (config entries
-`models_config.nle` / `models_config.td_npse` with `eval_mode:
-"reload_checkpoint"`) and only performs posterior inference and metric
-evaluation. Note the following:
-
-- `run_nle_singleobs_train.py` saves its checkpoint directly to
-  `Gaussian/data/nle_checkpoint.pt` (the default `--checkpoint-path`).
-- `run_td_npse_singleobs_train_pairplots.py` writes its checkpoint under
-  `Gaussian/results/td_npse_singleobs_train_pairplots/<exp_name>/artifacts/td_npse_checkpoint.pt`,
-  where `<exp_name>` encodes `n_train`, `train_n_obs`, `epochs` and `seed`
-  (e.g. `ntrain50000_trainobs1_e5000_seed0`). Copy it to the location
-  expected by the main experiment before running it:
-
-  ```bash
-  cp Gaussian/results/td_npse_singleobs_train_pairplots/ntrain50000_trainobs1_e5000_seed0/artifacts/td_npse_checkpoint.pt \
-     Gaussian/data/td_npse_checkpoint.pt
-  ```
-
-- In reload mode, `run_experiment.py` rebuilds both models from the saved
-  checkpoint (`model_kwargs` plus state dict), so their training and
-  inference hyperparameters (e.g. NLE epochs, TD-NPSE diffusion/sampling
-  settings) come from the training run, not from `config.json`; the
-  training-related `nle`/`td_npse` config fields are therefore ignored by
-  the main experiment. Set training hyperparameters through the standalone
-  scripts' CLI arguments (defaults: NLE 500 epochs; TD-NPSE up to 5000
-  epochs with early stopping).
-- To confirm the checkpoints were loaded, look for
-  `Reloading NLE checkpoint for evaluation: ...` and
-  `Reloading TD-NPSE checkpoint for evaluation: ...` in the main experiment
-  log. A missing checkpoint raises `FileNotFoundError`.
-
-The scripts insert the task directory and the repository root into
-`sys.path`, so they work from any working directory. Results are written to
-`results*/` subdirectories next to each task (git-ignored; regenerate with the
-same `config.json` to reproduce).
+Results are written under each task's `results*/` directories by default.
+The main experiments report metrics per round and aggregate them across
+completed rounds.
 
 ## Configuration
 
-Each task has its own `config.json` (there is deliberately no shared schema:
-the tasks expose different hyper-parameters). Common keys:
+The task configuration sets the simulation budget, methods, and evaluation
+options. The exact keys vary by task.
 
 | Key | Meaning |
 | --- | --- |
-| `dataset_size` | number of training pairs `(theta, x)` |
-| `batch_size` / `learning_rate` | training hyper-parameters |
-| `models_to_run` | list of methods to evaluate |
-| `models_config.<model>.*` | per-model hyper-parameters |
-| `n_samples_posterior` | posterior samples per method |
-| `num_rounds` / `n_rounds` | replications (Gaussian, LotkaVoletrra) or SBI rounds (SNPE-C/NPE) |
-| `n_observation` / `n_observation_list` | observations per dataset (Gaussian; paper values 25/50/100) |
+| `models_to_run` | Methods to run |
+| `models_config` | Per-method training and inference settings |
+| `dataset_size` | Number of simulated training pairs |
+| `n_samples_posterior` | Number of posterior samples per estimate |
+| `num_rounds`, `n_rounds` | Number of experiment replications in the Gaussian, Lotka–Volterra, and Radio runners |
+| `evaluation_num_rounds` | Number of Lotka–Volterra evaluation replications |
+| `n_observation_list`, `evaluation_n_observation_list` | Gaussian observation counts for training and checkpoint evaluation |
+| `calibration_config` | SIR calibration pairs, grouping, and coverage grid |
 
 ## Implementation notes
 
-We control variability as much as possible: every experiment fixes its
-random seed (`seed` in `config.json`), data generation and training are
-deterministic given the seed, and CUDA work is configured for
-deterministic algorithms where supported. Nevertheless, the performance of
-an amortized estimator can still vary somewhat when it is trained on a
-different machine (GPU, CUDA version, or framework build), because
-floating-point reductions and non-deterministic kernels differ across
-hardware.
+Configurations specify random seeds and training settings. Floating-point
+and sampling differences across devices and library builds can still affect
+individual runs. The refinement configuration controls the MCMC proposal
+scale and chain length. Acceptance rates and posterior plots can help
+diagnose refinement behavior.
 
-For this reason, the local ABC-MCMC refinement step may need mild
-re-tuning to make sure the chains converge to the correct
-summary-conditioned posterior. The main knob is the proposal step-size
-coefficient (`proposal_std` in each task's `refinement_config` /
-`refine_config`, `proposal_std_coeff` in LotkaVoletrra); values in the
-range **0.2–0.6** are a good starting point. If the acceptance rate is very
-low, decrease the coefficient; if the chains barely move from the amortized
-samples, increase it.
+## References
+
+**Methods**
+
+- Greenberg, D., Nonnenmacher, M., & Macke, J. (2019). [Automatic posterior transformation for likelihood-free inference](https://proceedings.mlr.press/v97/greenberg19a.html). *Proceedings of the 36th International Conference on Machine Learning*, PMLR 97, 2404–2414.
+- Huang, D., Bharti, A., Souza, A., Acerbi, L., & Kaski, S. (2023). [Learning robust statistics for simulation-based inference under model misspecification](https://proceedings.neurips.cc/paper_files/paper/2023/hash/16c5b4102a6b6eb061e502ce6736ad8a-Abstract-Conference.html). *Advances in Neural Information Processing Systems*, 36, 7289–7310.
+- Jiang, B., Wu, T.-Y., Zheng, C., & Wong, W. H. (2017). [Learning summary statistic for approximate Bayesian computation via deep neural network](https://www3.stat.sinica.edu.tw/statistica/j27n4/J27N411/J27N411.html). *Statistica Sinica*, 27(4), 1595–1618.
+- Linhart, J., Cardoso, G. V., Gramfort, A., Le Corff, S., & Rodrigues, P. L. C. (2026). [Diffusion posterior sampling for simulation-based inference in tall data settings](https://openreview.net/forum?id=cdhfoS6Gyo). *Transactions on Machine Learning Research*.
+- Papamakarios, G., & Murray, I. (2016). [Fast ε-free inference of simulation models with Bayesian conditional density estimation](https://proceedings.neurips.cc/paper/2016/hash/6aca97005c68f1206823815f66102863-Abstract.html). *Advances in Neural Information Processing Systems*, 29, 1028–1036.
+- Papamakarios, G., Sterratt, D., & Murray, I. (2019). [Sequential neural likelihood: Fast likelihood-free inference with autoregressive flows](https://proceedings.mlr.press/v89/papamakarios19a.html). *Proceedings of the 22nd International Conference on Artificial Intelligence and Statistics*, PMLR 89, 837–848.
+- Radev, S. T., Mertens, U. K., Voss, A., Ardizzone, L., & Köthe, U. (2022). [BayesFlow: Learning complex stochastic models with invertible neural networks](https://doi.org/10.1109/TNNLS.2020.3042395). *IEEE Transactions on Neural Networks and Learning Systems*, 33(4), 1452–1466.
+
+**Software**
+
+- Kühmichel, L., Huang, J. M., Pratz, V., Arruda, J., Olischläger, H., Habermann, D., Kucharsky, S., Elsemüller, L., Mishra, A., Bracher, N., Jedhoff, S., Schmitt, M., Bürkner, P.-C., & Radev, S. T. (2026). [BayesFlow 2.0: Multi-backend amortized Bayesian inference in Python](https://arxiv.org/abs/2602.07098). *arXiv:2602.07098*. Package version used here: 2.0.8.
+- Tejero-Cantero, A., Boelts, J., Deistler, M., Lueckmann, J.-M., Durkan, C., Gonçalves, P. J., Greenberg, D. S., & Macke, J. H. (2020). [sbi: A toolkit for simulation-based inference](https://joss.theoj.org/papers/10.21105/joss.02505). *Journal of Open Source Software*, 5(52), 2505. Package version used here: 0.26.1.

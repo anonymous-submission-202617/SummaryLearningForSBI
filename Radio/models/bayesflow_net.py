@@ -284,7 +284,7 @@ class MyContinuousApproximator(bf.ContinuousApproximator):
             return self.compute_metrics(**inputs, **kwargs)
         return super().call(inputs, **kwargs)
 
-def build_bayesflow_model(d, d_x, summary_dim=10, *, theta_mean=None, theta_std=None):
+def build_bayesflow_model(d, d_x, summary_dim=10, *, theta_mean=None, theta_std=None, **approximator_kwargs):
     """
     Builds the BayesFlow model components: SummaryNetwork, InferenceNetwork, and ContinuousApproximator.
     
@@ -318,7 +318,8 @@ def build_bayesflow_model(d, d_x, summary_dim=10, *, theta_mean=None, theta_std=
     approximator = MyContinuousApproximator(
         inference_network=inference_net,
         summary_network=summary_net,
-        adapter=adapter
+        adapter=adapter,
+        **approximator_kwargs,
     )
     
     return approximator

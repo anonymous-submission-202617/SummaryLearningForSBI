@@ -242,7 +242,8 @@ def unconstrained_to_box(z, lower, upper):
 
 
 def build_bayesflow_model(
-    d, d_x, summary_dim=10, theta_lower=None, theta_upper=None, inference_l1_lambda=0.0
+    d, d_x, summary_dim=10, theta_lower=None, theta_upper=None, inference_l1_lambda=0.0,
+    *, standardize="all",
 ):
     """
     Builds the BayesFlow model components: SummaryNetwork, InferenceNetwork, and ContinuousApproximator.
@@ -278,7 +279,8 @@ def build_bayesflow_model(
     approximator = MyContinuousApproximator(
         inference_network=inference_net,
         summary_network=summary_net,
-        adapter=adapter
+        adapter=adapter,
+        standardize=standardize,
     )
     approximator.theta_lower = None if theta_lower is None else np.asarray(theta_lower, dtype=np.float32)
     approximator.theta_upper = None if theta_upper is None else np.asarray(theta_upper, dtype=np.float32)

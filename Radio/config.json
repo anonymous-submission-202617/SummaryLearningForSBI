@@ -1,4 +1,5 @@
 {
+  "run_mode": "new_experiment",
   "n_rounds": 20,
   "seed": 0,
   "Ns": 801,
