@@ -13,10 +13,7 @@ Vague Prior*):
 
 - **Table 3 ("Results for Lotka-Volterra model.")** — bias, credible-interval
   length, coverage and conditional calibration error, together with average
-  runtime. The experiment attempts 100 replications; BayesFlow metrics are
-  averaged over successful replications only. Exploding gradients can make
-  its KL-based optimization fail on this benchmark. Failed replications are
-  excluded from both the aggregate metrics and their denominators;
+  runtime. See the remark below for how we average BayesFlow results;
 - the **Refine+ figure** — posterior density plots across the stages of the
   Refine+ procedure ("Amortized", "Sequential" and "Refine+ (MCMC)") for the
   SMMD variant. It is produced by `plot_refinement_comparison` and written
@@ -28,6 +25,10 @@ Vague Prior*):
   default** (see "Runtime" below); set
   `plot_config.save_refinement_comparison_plots` to `true` in `config.json`
   to regenerate them.
+
+> **Remark (LV BayesFlow).** The KL loss can cause exploding gradients and
+> make training fail. We average only runs that finish and yield usable
+> posterior samples, even if the loss fluctuates or starts decreasing late.
 
 All methods are compared under a matched simulation budget (total number of
 simulator calls across training and refinement). SNPE-C uses the standard

@@ -56,31 +56,6 @@ The output files contain the metrics and samples used for those comparisons.
 | [Lotka–Volterra](LotkaVoletrra/run_experiment.py) | Table 3, population ecology under a vague prior | Bias, interval length, and coverage in `final_summary.csv`, with posterior samples and comparisons across the Refine+ stages. |
 | [Radio](Radio/run_experiment.py) | Predictive performance with a misspecified simulator | Posterior predictive curves and predictive RMSE. Aggregate metrics are in `rmse_summary_stats.csv`. |
 
-The main experiments follow different evaluation protocols:
-
-- **Gaussian** compares the estimated and reference posteriors on each
-  observation set. The training budget study varies both the number of
-  simulations used to fit the models and the number of observations supplied
-  at inference time.
-- **SIR** uses a single fit per method across simulated calibration pairs.
-  For each pair, the runner checks whether posterior credible intervals
-  contain the simulated parameter values.
-- **Lotka–Volterra** evaluates the amortized posterior and the Refine+
-  posterior. Refine+ trains on a mixture of simulations from the prior and
-  the current posterior before applying ABC-MCMC.
-- **Radio** compares posterior predictive simulations with the measured Turin
-  channel data. Predictive RMSE includes the discrepancy between the mean
-  predicted curve and the mean measured curve.
-
-Evaluation recomputes metrics from the supplied artifacts. Reported means use
-the replications completed in each run, and stochastic sampling can introduce
-numerical variation.
-
-Additional scripts train the Gaussian [NLE](Gaussian/run_nle_singleobs_train.py)
-and [TD-NPSE](Gaussian/run_td_npse_singleobs_train_pairplots.py) models.
-Task-specific instructions are available for [Gaussian](Gaussian/README.md),
-[SIR](SIR/README.md), [Lotka–Volterra](LotkaVoletrra/README.md), and
-[Radio](Radio/README.md).
 
 ## Repository layout
 

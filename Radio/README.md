@@ -8,18 +8,11 @@ uninformative prior.
 
 ## Data
 
-The real measurements used for inference (`data/turin_obs.npy`, `n = 100`
-impulse-response realizations over `d_X = 801` frequency bins) originate
-from the measurement campaign of Gustafson et al. (2016). We copied the
-dataset from the public benchmark repository of Huang et al. (2023)
-(<https://github.com/huangdaolang/robust-sbi>), which uses the same
-measurements in its radio-propagation application. It is used as the fixed
-observed dataset throughout the experiment.
-
-The distributed file already contains power values in decibels. We retain
-all 100 traces and all 801 points per trace and cast the array to `float32`.
-We do not rescale, smooth, or truncate the traces or extract hand-crafted
-features before passing the full traces to the summary networks.
+We use all 100 measured traces (`data/turin_obs.npy`) from Gustafson et al.
+(2016) as distributed by [Huang et al. (2023)](https://github.com/huangdaolang/robust-sbi).
+The Turin simulator produces traces in the same 801-point decibel power
+format. The summary networks use the full traces without additional
+preprocessing.
 
 Gustafson, C., Bolin, D., & Tufvesson, F. (2016). Modeling the polarimetric
 mm-wave propagation channel using censored measurements. In *2016 IEEE
